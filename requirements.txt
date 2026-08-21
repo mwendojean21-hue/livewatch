@@ -1,7 +1,6 @@
 fastapi
 uvicorn
 sqlalchemy
-psycopg2-binary
 python-dotenv
 python-jose[cryptography]
 passlib[bcrypt]
@@ -13,4 +12,5 @@ python-dateutil
 yt-dlp
 aiohttp
 jinja2
-cockroachdb
+sqlalchemy-cockroachdb
+psycopg2-binary
