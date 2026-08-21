@@ -3619,6 +3619,7 @@ async def events_page(request: Request, db: Session = Depends(get_db)):
         {
             "request": request,
             "announcements": announcements,
+            "events": {cat: [] for cat in ["sport", "cinema", "news", "kids", "documentary", "music", "other"]},
             "language": get_language(request),
             "visitor_id": get_visitor_id(request),
             "app_name": settings.APP_NAME,
