@@ -1,2 +1,30 @@
+[project]
+name = "livewatch"
+version = "7.0.0"
+description = "Plateforme de streaming ultime — TV, Sports, Chaînes télévisions mondiales, YouTube Live, Radio & Lives communautaires"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "sqlalchemy",
+    "psycopg2-binary",
+    "python-dotenv",
+    "python-jose[cryptography]",
+    "passlib[bcrypt]",
+    "httpx",
+    "aiofiles",
+    "Pillow",
+    "m3u8",
+    "python-dateutil",
+    "yt-dlp",
+    "aiohttp",
+    "jinja2",
+]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [tool.vercel]
 entrypoint = "Livewatch:app"
