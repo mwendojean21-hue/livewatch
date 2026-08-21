@@ -74,6 +74,27 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPExcept
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+
+# ==================== STOCKAGE INSCRIPTIBLE (Vercel = lecture seule sauf /tmp) ====================
+# Sur Vercel, tout le système de fichiers déployé est en lecture seule, sauf /tmp.
+# Vercel définit automatiquement la variable d'environnement VERCEL=1.
+IS_SERVERLESS = bool(os.environ.get("VERCEL"))
+WRITABLE_DIR  = "/tmp/livewatch" if IS_SERVERLESS else "."
+os.makedirs(WRITABLE_DIR, exist_ok=True)
+
+TEMPLATES_DIR   = os.path.join(WRITABLE_DIR, "templates")
+UPLOADS_DIR     = os.path.join(WRITABLE_DIR, "static", "uploads")
+THUMBNAILS_DIR  = os.path.join(WRITABLE_DIR, "static", "thumbnails")
+RECORDINGS_DIR  = os.path.join(WRITABLE_DIR, "static", "recordings")
+# Créés immédiatement : StaticFiles() est instancié au chargement du module,
+# avant que lifespan() ne s'exécute — les dossiers doivent déjà exister.
+for _d in (TEMPLATES_DIR, UPLOADS_DIR, THUMBNAILS_DIR, RECORDINGS_DIR):
+    os.makedirs(_d, exist_ok=True)
+# NOTE : /tmp est éphémère sur Vercel (vidé entre cold starts, non partagé entre instances).
+# Les fichiers uploadés par les utilisateurs (avatars, miniatures, enregistrements) ne
+# persisteront pas de façon fiable en production serverless — prévoir un stockage externe
+# (Vercel Blob, S3, Cloudinary) pour ces usages.
+
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -2638,8 +2659,8 @@ async def lifespan(app: FastAPI):
         logger.error(f"Erreur create_all : {e}")
         raise
 
-    # Création des dossiers
-    for directory in ["static", "templates", "static/uploads", "static/thumbnails", "static/recordings"]:
+    # Création des dossiers (static/ est déjà commité dans le repo, pas besoin de le créer)
+    for directory in [TEMPLATES_DIR, UPLOADS_DIR, THUMBNAILS_DIR, RECORDINGS_DIR]:
         os.makedirs(directory, exist_ok=True)
 
     if os.path.exists(settings.LOGO_PATH):
@@ -2756,13 +2777,20 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 
 # Fichiers statiques
+# Mounts dédiés pour le contenu généré au runtime (déclarés AVANT le mount général
+# "/static" pour que ces préfixes plus spécifiques soient résolus en priorité) —
+# ce contenu vit dans WRITABLE_DIR (/tmp sur Vercel), pas dans le dossier "static/" commité.
+app.mount("/static/thumbnails", StaticFiles(directory=THUMBNAILS_DIR), name="static-thumbnails")
+app.mount("/static/uploads", StaticFiles(directory=UPLOADS_DIR), name="static-uploads")
+app.mount("/static/recordings", StaticFiles(directory=RECORDINGS_DIR), name="static-recordings")
+# Assets statiques commités dans le repo (logo, CSS, JS, favicon...)
 app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
+templates = Jinja2Templates(directory=TEMPLATES_DIR)
 # Fix Python 3.14 + Jinja2: LRUCache TypeError quand globals contient des dicts
 try:
     from jinja2 import Environment, FileSystemLoader
     _jinja_env = Environment(
-        loader=FileSystemLoader("templates"),
+        loader=FileSystemLoader(TEMPLATES_DIR),
         autoescape=True,
         cache_size=0,
         auto_reload=True,
@@ -4137,7 +4165,7 @@ async def upload_thumbnail(request: Request, file: UploadFile = File(...)):
 
     # Générer un nom de fichier unique
     filename = f"{uuid.uuid4()}{ext}"
-    filepath = f"static/thumbnails/{filename}"
+    filepath = os.path.join(THUMBNAILS_DIR, filename)
 
     # Sauvegarder le fichier
     async with aiofiles.open(filepath, 'wb') as f:
@@ -5135,7 +5163,7 @@ async def start_recording(
 ):
     """Lance l'enregistrement d'un flux HLS avec ffmpeg"""
     safe_name = re.sub(r'[^a-zA-Z0-9_\-]', '', filename)[:80]
-    outdir = "static/recordings"
+    outdir = RECORDINGS_DIR
     os.makedirs(outdir, exist_ok=True)
     outfile = f"{outdir}/{safe_name}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.mp4"
 
@@ -6553,7 +6581,7 @@ async def admin_system_info(request: Request):
         "app_name":        settings.APP_NAME,
         "app_version":     "2.0",
         "db_url":          settings.DATABASE_URL[:40] + "..." if len(settings.DATABASE_URL) > 40 else settings.DATABASE_URL,
-        "templates":       len(os.listdir("templates")) if os.path.exists("templates") else 0,
+        "templates":       len(os.listdir(TEMPLATES_DIR)) if os.path.exists(TEMPLATES_DIR) else 0,
         "iptv_playlists":  len(IPTV_PLAYLISTS),
     })
 
@@ -7006,7 +7034,7 @@ async def admin_system_info(request: Request):
         "cpu_percent": cpu, "memory_percent": mem, "disk_percent": disk,
         "app_name": settings.APP_NAME, "app_version": "2.0",
         "db_url": (settings.DATABASE_URL[:40]+"...") if len(settings.DATABASE_URL)>40 else settings.DATABASE_URL,
-        "templates": len(os.listdir("templates")) if os.path.exists("templates") else 0,
+        "templates": len(os.listdir(TEMPLATES_DIR)) if os.path.exists(TEMPLATES_DIR) else 0,
         "iptv_playlists": len(IPTV_PLAYLISTS),
     })
 
@@ -8776,11 +8804,10 @@ async def on_startup():
 def write_all_templates():
     """Écrit tous les templates Jinja2 sur disque"""
     import os
-    os.makedirs("templates", exist_ok=True)
-    os.makedirs("static", exist_ok=True)
-    os.makedirs("static/thumbnails", exist_ok=True)
-    os.makedirs("static/uploads", exist_ok=True)
-    os.makedirs("static/recordings", exist_ok=True)
+    os.makedirs(TEMPLATES_DIR, exist_ok=True)
+    os.makedirs(THUMBNAILS_DIR, exist_ok=True)
+    os.makedirs(UPLOADS_DIR, exist_ok=True)
+    os.makedirs(RECORDINGS_DIR, exist_ok=True)
 
     # ══════════════════════════════════════════════════════════════════
     # BASE TEMPLATE — layout commun à toutes les pages
@@ -14488,7 +14515,7 @@ html.dark .ab-phone-box .ab-phone-label { color:#9ca3af!important; }
     }
 
     for name, content in templates.items():
-        with open(f"templates/{name}", "w", encoding="utf-8") as f:
+        with open(os.path.join(TEMPLATES_DIR, name), "w", encoding="utf-8") as f:
             f.write(content)
 
     logger.info(f"{len(templates)} templates HTML écrits sur disque")
