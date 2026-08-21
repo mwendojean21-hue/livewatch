@@ -8840,6 +8840,9 @@ def write_all_templates():
     <!-- HLS.js — sans defer pour être disponible immédiatement dans les pages lecteur -->
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.15/dist/hls.min.js"></script>
 
+    <!-- Dash.js — lecture des flux MPEG-DASH (.mpd), non couverts par HLS.js -->
+    <script src="https://cdn.jsdelivr.net/npm/dashjs@4.7.4/dist/dash.all.min.js"></script>
+
     <!-- Chart.js -->
     <script defer src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 
@@ -12370,7 +12373,31 @@ document.addEventListener('DOMContentLoaded',function(){
         if (effectiveType === 'youtube') { _initYT(); }
         else if (effectiveType === 'audio') { _initAudio(); }
         else if (effectiveType === 'mp4') { _initMP4Direct(); }
+        else if (effectiveType === 'dash') { _initDASH(); }
         else { _initHLSDirect(); }  // Tenter direct en premier
+    }
+
+    // ─── NIVEAU DASH : Dash.js pour les manifestes .mpd (HLS.js ne les lit pas) ───
+    function _initDASH() {
+        var v = document.getElementById('we-video');
+        if (!v || !streamUrl) { _initIframe(); return; }
+        if (window.dashjs) {
+            _log('Lecture DASH via dash.js');
+            try {
+                var dashPlayer = dashjs.MediaPlayer().create();
+                dashPlayer.initialize(v, streamUrl, true);
+                dashPlayer.on(dashjs.MediaPlayer.events.ERROR, function() {
+                    _log('DASH échoué, passage iframe');
+                    _initIframe();
+                });
+            } catch (e) {
+                _log('DASH exception: ' + e);
+                _initIframe();
+            }
+        } else {
+            _log('dash.js indisponible, passage iframe');
+            _initIframe();
+        }
     }
 
     // ─── NIVEAU 1 : HLS.js URL directe (pas de proxy — moins de latence) ───
@@ -13023,6 +13050,7 @@ document.addEventListener('DOMContentLoaded',function(){
         var u = url.split('?')[0].toLowerCase();
         if (u.endsWith('.mp3') || u.endsWith('.aac') || u.endsWith('.flac')) return 'audio';
         if (u.endsWith('.mp4') || u.endsWith('.webm')) return 'mp4';
+        if (u.endsWith('.mpd')) return 'dash';
         return 'hls';
     }
     var _type = _detectType(_url);
@@ -13031,7 +13059,25 @@ document.addEventListener('DOMContentLoaded',function(){
         if (!_url) { _showErr('URL du flux manquante.'); return; }
         if (_type === 'audio') { _initAudio(); }
         else if (_type === 'mp4') { _initMP4Direct(); }
+        else if (_type === 'dash') { _initDASH(); }
         else { _initHLSDirect(); }  // Direct en premier
+    }
+
+    // ─── DASH : Dash.js pour les manifestes .mpd (HLS.js ne les lit pas) ───
+    function _initDASH(){
+        var v = document.getElementById('wi-video');
+        if (!v || !_url) { _showFinalErr(); return; }
+        if (window.dashjs) {
+            try {
+                var dashPlayer = dashjs.MediaPlayer().create();
+                dashPlayer.initialize(v, _url, true);
+                dashPlayer.on(dashjs.MediaPlayer.events.ERROR, function(){ _showFinalErr(); });
+            } catch (e) {
+                _showFinalErr();
+            }
+        } else {
+            _showFinalErr();
+        }
     }
 
     function _initHLSDirect(){
