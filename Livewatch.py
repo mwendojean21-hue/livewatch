@@ -3606,6 +3606,38 @@ async def get_logo():
             return FileResponse(path, media_type="image/png")
     return RedirectResponse(url="https://via.placeholder.com/200x200?text=Livewatch")
 
+@app.get("/events", response_class=HTMLResponse)
+async def events_page(request: Request, db: Session = Depends(get_db)):
+    """Page Événements — affiche les annonces publiées par l'admin"""
+    announcements = db.query(AdminAnnouncement).filter(
+        AdminAnnouncement.is_active == True
+    ).order_by(desc(AdminAnnouncement.created_at)).all()
+
+    return templates.TemplateResponse(
+        request,
+        "events.html",
+        {
+            "request": request,
+            "announcements": announcements,
+            "language": get_language(request),
+            "visitor_id": get_visitor_id(request),
+            "app_name": settings.APP_NAME,
+            "categories": CATEGORIES,
+            "logo_path": settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None
+        }
+    )
+
+@app.get("/api/events/upcoming")
+async def api_events_upcoming(limit: int = 6, db: Session = Depends(get_db)):
+    """
+    Programmes/événements à venir groupés par catégorie (sport, cinéma, etc.).
+    Fonctionnalité de planning TV pas encore implémentée côté données —
+    renvoie des catégories vides pour que la page Événements ne casse pas
+    en attendant une vraie source de programmes.
+    """
+    empty_categories = {cat: [] for cat in ["sport", "cinema", "news", "kids", "documentary", "music", "other"]}
+    return JSONResponse(empty_categories)
+
 # ==================== API YOUTUBE ====================
 
 @app.get("/api/youtube/resolve")
