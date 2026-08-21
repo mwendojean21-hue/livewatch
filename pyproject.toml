@@ -12,6 +12,8 @@ dependencies = [
     "passlib[bcrypt]",
     "httpx",
     "aiofiles",
+    "sqlalchemy-cockroachdb",
+    "psycopg2-binary",
     "Pillow",
     "m3u8",
     "python-dateutil",
