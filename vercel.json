@@ -1,0 +1,14 @@
+{
+  "builds": [
+    {
+      "src": "Livewatch.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "Livewatch.py"
+    }
+  ]
+}
