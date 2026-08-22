@@ -250,6 +250,7 @@ class Visitor(Base):
     total_streams      = Column(Integer, default=0)
     preferred_language = Column(String(10), default="fr")
     theme              = Column(String(10), default="auto")
+    current_page       = Column(String(255), nullable=True)  # dernière page visitée (activité en direct)
 
 class ExternalStream(Base):
     __tablename__ = "external_streams"
@@ -2595,8 +2596,9 @@ async def _daily_stats_recorder():
                     Visitor.created_at <  today + timedelta(days=1)
                 ).count()
 
-                # Pic d'utilisateurs actifs (snapshot actuel)
-                peak = active_tracker.count()
+                # Pic d'utilisateurs actifs (fenêtre 5 min, source DB partagée entre instances)
+                _cutoff_5m = now - timedelta(minutes=5)
+                peak = db.query(Visitor).filter(Visitor.last_seen >= _cutoff_5m).count()
 
                 # Upsert dans DailyVisitStats
                 row = db.query(DailyVisitStats).filter(DailyVisitStats.date == today).first()
@@ -2658,6 +2660,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Erreur create_all : {e}")
         raise
+
+    # ── 2bis. Migration légère : colonnes ajoutées après le déploiement initial ──
+    # create_all() ne modifie jamais les tables existantes (uniquement les nouvelles).
+    # ADD COLUMN IF NOT EXISTS est sans danger : no-op si la colonne existe déjà.
+    try:
+        from sqlalchemy import text
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE visitors ADD COLUMN IF NOT EXISTS current_page VARCHAR(255)"
+            ))
+        logger.info("Migration légère OK (visitors.current_page)")
+    except Exception as e:
+        logger.warning(f"Migration légère ignorée (probablement déjà appliquée) : {e}")
 
     # Création des dossiers (static/ est déjà commité dans le repo, pas besoin de le créer)
     for directory in [TEMPLATES_DIR, UPLOADS_DIR, THUMBNAILS_DIR, RECORDINGS_DIR]:
@@ -2899,6 +2914,33 @@ class ActiveUsersTracker:
             "ts":            now.isoformat(),
         }
 
+    async def db_snapshot(self) -> dict:
+        """
+        Snapshot fiable en environnement serverless multi-instances : lit
+        Visitor (last_seen, current_page) en base plutôt que la mémoire du
+        process, qui n'est pas partagée entre les instances Vercel.
+        """
+        try:
+            db = SessionLocal()
+            try:
+                cutoff = datetime.utcnow() - timedelta(seconds=self._ACTIVE_WINDOW)
+                active_visitors = db.query(Visitor).filter(Visitor.last_seen >= cutoff).all()
+                page_counts: Dict[str, int] = {}
+                for v in active_visitors:
+                    p = (v.current_page or "/").split("?")[0]
+                    page_counts[p] = page_counts.get(p, 0) + 1
+                top_pages = sorted(page_counts.items(), key=lambda x: -x[1])[:5]
+                return {
+                    "active_users": len(active_visitors),
+                    "top_pages":    [{"page": p, "count": c} for p, c in top_pages],
+                    "ts":           datetime.utcnow().isoformat(),
+                }
+            finally:
+                db.close()
+        except Exception as e:
+            logger.debug(f"db_snapshot error: {e}")
+            return {"active_users": 0, "top_pages": [], "ts": datetime.utcnow().isoformat()}
+
     # ── WebSocket admin ──────────────────────────────────────────────────────
 
     async def connect_admin(self, ws: WebSocket):
@@ -2927,7 +2969,7 @@ class ActiveUsersTracker:
             try:
                 await asyncio.sleep(5)
                 if self._admin_ws:   # ne calcule que si quelqu'un écoute
-                    snap = self.snapshot()
+                    snap = await self.db_snapshot()
                     await self.broadcast_to_admins({"type": "stats", **snap})
             except asyncio.CancelledError:
                 break
@@ -4719,12 +4761,18 @@ async def admin_live_stats(request: Request, db: Session = Depends(get_db)):
         db_status = "ok"
     except Exception as e:
         db_status = str(e)[:100]
-    snap = active_tracker.snapshot()
+    cutoff_5m = datetime.utcnow() - timedelta(minutes=5)
+    active_visitors = db.query(Visitor).filter(Visitor.last_seen >= cutoff_5m).all()
+    _page_counts: Dict[str, int] = {}
+    for v in active_visitors:
+        p = (v.current_page or "/").split("?")[0]
+        _page_counts[p] = _page_counts.get(p, 0) + 1
+    _top_pages = sorted(_page_counts.items(), key=lambda x: -x[1])[:5]
     return JSONResponse({
         "live_streams":    db.query(UserStream).filter(UserStream.is_live == True).count(),
         "total_visitors":  db.query(Visitor).count(),
-        "active_users":    snap["active_users"],
-        "top_pages":       snap["top_pages"],
+        "active_users":    len(active_visitors),
+        "top_pages":       [{"page": p, "count": c} for p, c in _top_pages],
         "iptv_channels":   db.query(IPTVChannel).count(),
         "is_syncing":      iptv_sync.is_syncing,
         "db_status":       db_status,
@@ -4758,7 +4806,7 @@ async def admin_live_ws(websocket: WebSocket):
     await active_tracker.connect_admin(websocket)
     try:
         # Envoyer un snapshot immédiat à la connexion
-        await websocket.send_json({"type": "stats", **active_tracker.snapshot()})
+        await websocket.send_json({"type": "stats", **await active_tracker.db_snapshot()})
         # Garder la connexion ouverte en attendant les messages du client (ping)
         while True:
             try:
@@ -5074,13 +5122,38 @@ async def _geo_lookup_ip(ip: str) -> dict:
 
 @app.post("/api/track/location")
 async def track_location(request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    """Enregistre la localisation d'un visiteur en arrière-plan"""
+    """Enregistre la localisation ET l'activité (page courante) d'un visiteur en arrière-plan"""
     client_ip = _get_client_ip(request)
     visitor_id = get_visitor_id(request)
+    try:
+        body = await request.json()
+        current_page = (body or {}).get("page", "")[:255]
+    except Exception:
+        current_page = ""
+    ua = request.headers.get("user-agent", "")
 
     async def _do_geo():
         try:
             db2 = SessionLocal()
+
+            # Mise à jour de l'activité "en direct" (source de vérité partagée
+            # entre toutes les instances serverless — remplace le tracker en mémoire)
+            visitor = db2.query(Visitor).filter(Visitor.visitor_id == visitor_id).first()
+            if visitor:
+                visitor.last_seen = datetime.utcnow()
+                visitor.ip_address = client_ip
+                if current_page:
+                    visitor.current_page = current_page
+            else:
+                visitor = Visitor(
+                    visitor_id=visitor_id,
+                    ip_address=client_ip,
+                    user_agent=ua[:500],
+                    current_page=current_page or None
+                )
+                db2.add(visitor)
+            db2.commit()
+
             existing = db2.query(UserLocation).filter(UserLocation.ip_address == client_ip).first()
             if existing:
                 existing.last_seen = datetime.utcnow()
@@ -8306,119 +8379,6 @@ def _merge_extra_iptv_countries():
 
 
 
-# ==================== WEBSOCKET HANDLERS COMPLETS ====================
-
-# Gestionnaire WebSocket pour les stats admin en temps réel
-@app.websocket("/ws/admin/live")
-async def ws_admin_live(websocket: WebSocket):
-    """
-    WebSocket dédié au dashboard admin.
-    Envoie en continu :
-    - Nombre d'utilisateurs actifs (toutes les 5s)
-    - Top 5 pages visitées (toutes les 10s)
-    - Comptage de streams live (toutes les 15s)
-    - Alertes modération si nouveaux signalements
-    """
-    await websocket.accept()
-    logger.info("WebSocket admin connecté")
-
-    # Vérifier que c'est bien un admin (via cookie dans les headers)
-    # Note: la vérification complète se fait côté client via session cookie
-    
-    db = SessionLocal()
-    loop_count = 0
-    
-    try:
-        while True:
-            try:
-                # Ping / réception éventuelle du client
-                try:
-                    data = await asyncio.wait_for(
-                        websocket.receive_text(), timeout=5.0
-                    )
-                    if data == "ping":
-                        await websocket.send_text('{"type":"pong"}')
-                        continue
-                except asyncio.TimeoutError:
-                    pass
-                except Exception:
-                    break
-
-                loop_count += 1
-                from datetime import datetime, timezone, timedelta
-                now = datetime.now(timezone.utc)
-                cutoff_5m = now - timedelta(minutes=5)
-
-                # Stats utilisateurs actifs
-                active_users = db.query(Visitor).filter(
-                    Visitor.last_seen >= cutoff_5m
-                ).count()
-
-                # Streams live
-                live_streams = db.query(LiveStream).filter(
-                    LiveStream.is_live == True
-                ).count()
-
-                # Top pages (si disponible)
-                top_pages = []
-                try:
-                    from sqlalchemy import text as sa_text, func
-                    # Simuler des pages visitées basées sur les visiteurs récents
-                    recent_visitors = db.query(Visitor).filter(
-                        Visitor.last_seen >= cutoff_5m
-                    ).limit(100).all()
-                    
-                    page_counts = {}
-                    # Distribuer aléatoirement entre les pages principales
-                    import random
-                    pages_sample = ['/', '/events', '/settings', '/go-live', '/search', '/about']
-                    for v in recent_visitors:
-                        page = random.choice(pages_sample)
-                        page_counts[page] = page_counts.get(page, 0) + 1
-                    
-                    top_pages = sorted(
-                        [{"page": k, "count": v} for k, v in page_counts.items()],
-                        key=lambda x: x["count"], reverse=True
-                    )[:5]
-                except Exception:
-                    top_pages = [{"page": "/", "count": active_users}]
-
-                # Alertes modération (nouveaux signalements dans les 5 dernières minutes)
-                new_reports = db.query(Report).filter(
-                    Report.resolved == False,
-                ).count()
-
-                # Signaux de feedback non lus
-                unread_feedback = db.query(UserFeedback).filter(
-                    UserFeedback.is_read == False
-                ).count()
-
-                import json as _json
-                payload = _json.dumps({
-                    "type":           "stats",
-                    "active_users":   active_users,
-                    "live_streams":   live_streams,
-                    "top_pages":      top_pages,
-                    "new_reports":    new_reports,
-                    "unread_feedback":unread_feedback,
-                    "timestamp":      now.isoformat(),
-                    "loop":           loop_count,
-                })
-                await websocket.send_text(payload)
-
-                # Attendre 5 secondes avant la prochaine mise à jour
-                await asyncio.sleep(5)
-
-            except Exception as inner_err:
-                logger.debug(f"WS admin inner error: {inner_err}")
-                break
-
-    except Exception as outer_err:
-        logger.debug(f"WS admin disconnected: {outer_err}")
-    finally:
-        db.close()
-        logger.info("WebSocket admin déconnecté")
-
 
 # WebSocket pour le chat d'un stream utilisateur
 @app.websocket("/ws/stream/{stream_id}")
@@ -9206,6 +9166,12 @@ def write_all_templates():
                 <i class="fas fa-search"></i>
             </a>
 
+            <!-- Télécharger l'app — visible partout, texte masqué sur mobile -->
+            <a href="/static/livewatch.apk" download style="display:flex;align-items:center;gap:5px;background:#1f2937;color:#fff;padding:7px 12px;border-radius:99px;text-decoration:none;font-size:13px;font-weight:700;transition:background .2s;white-space:nowrap;" title="Télécharger l'application Android">
+                <i class="fas fa-download"></i>
+                <span class="nav-golive-label">App</span>
+            </a>
+
             <!-- Go Live — visible partout, texte masqué sur mobile -->
             <a href="/go-live" style="display:flex;align-items:center;gap:5px;background:#dc2626;color:#fff;padding:7px 12px;border-radius:99px;text-decoration:none;font-size:13px;font-weight:700;transition:background .2s;white-space:nowrap;">
                 <i class="fas fa-circle" style="font-size:8px;animation:livePulse 1s infinite;"></i>
@@ -9497,7 +9463,12 @@ function _loadAnnBadge() {
 // TRACKING LOCALISATION (silencieux)
 // ─────────────────────────────────────────────
 function _trackLocation() {
-    fetch('/api/track/location', {method:'POST', credentials:'include'}).catch(function(){});
+    fetch('/api/track/location', {
+        method:'POST',
+        credentials:'include',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({page: window.location.pathname})
+    }).catch(function(){});
 }
 
 // ─────────────────────────────────────────────
@@ -9506,6 +9477,9 @@ function _trackLocation() {
 document.addEventListener('DOMContentLoaded', function() {
     _loadAnnBadge();
     _trackLocation();
+    // Heartbeat toutes les 2 minutes pour garder l'activité à jour
+    // (fenêtre "actif" côté serveur = 5 minutes)
+    setInterval(_trackLocation, 120000);
 });
 </script>
 
@@ -12449,6 +12423,7 @@ document.addEventListener('DOMContentLoaded',function(){
                 manifestLoadingMaxRetry: 1,
                 levelLoadingTimeOut: 10000,
                 fragLoadingTimeOut: 20000,
+                renderTextTracksNatively: true,  // sous-titres/CC via les contrôles natifs du navigateur
                 xhrSetup: function(xhr) { xhr.withCredentials = false; }
             });
             _hls.loadSource(streamUrl);
@@ -12488,6 +12463,7 @@ document.addEventListener('DOMContentLoaded',function(){
                 manifestLoadingMaxRetry: 2,
                 levelLoadingTimeOut: 15000,
                 fragLoadingTimeOut: 25000,
+                renderTextTracksNatively: true,
             });
             _hls.loadSource(proxyUrl);
             _hls.attachMedia(v);
@@ -13123,6 +13099,7 @@ document.addEventListener('DOMContentLoaded',function(){
                 backBufferLength:30, maxBufferLength:90,
                 manifestLoadingTimeOut:10000, manifestLoadingMaxRetry:1,
                 levelLoadingTimeOut:10000, fragLoadingTimeOut:20000,
+                renderTextTracksNatively: true,
                 xhrSetup: function(xhr){ xhr.withCredentials=false; }
             });
             _hls.loadSource(_url);
@@ -13146,6 +13123,7 @@ document.addEventListener('DOMContentLoaded',function(){
                 enableWorker:true, lowLatencyMode:false,
                 manifestLoadingTimeOut:15000, manifestLoadingMaxRetry:2,
                 levelLoadingTimeOut:15000, fragLoadingTimeOut:25000,
+                renderTextTracksNatively: true,
             });
             _hls.loadSource(_proxyUrl);
             _hls.attachMedia(v);
@@ -13397,7 +13375,7 @@ document.addEventListener('DOMContentLoaded',function(){
         var v = document.getElementById('wu-video');
         if (!v) return;
         if (window.Hls && Hls.isSupported()){
-            _hls = new Hls({ enableWorker:true, lowLatencyMode:true });
+            _hls = new Hls({ enableWorker:true, lowLatencyMode:true, renderTextTracksNatively: true });
             _hls.loadSource(_streamUrl);
             _hls.attachMedia(v);
             _hls.on(Hls.Events.MANIFEST_PARSED, function(){ v.play().catch(function(){}); });
