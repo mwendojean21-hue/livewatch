@@ -8633,28 +8633,77 @@ async def track_visitor_middleware(request: Request, call_next):
         import asyncio as _asyncio
         _asyncio.create_task(_update_last_seen())
 
-    # Appeler le prochain handler
-    try:
-        response = await call_next(request)
-    except Exception as e:
+    # Appeler le prochain handler, avec retry automatique pour les erreurs de
+    # contention transactionnelle CockroachDB (transitoires par nature — voir
+    # doc CockroachDB : le client DOIT réessayer ces erreurs "40001")
+    RETRYABLE_MARKERS = (
+        "SerializationFailure",
+        "TransactionRetryWithProtoRefreshError",
+        "ReadWithinUncertaintyIntervalError",
+        "restart transaction",
+        "RETRY_",
+    )
+    max_attempts = 3 if request.method in ("GET", "HEAD") else 1
+    last_exc = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = await call_next(request)
+            last_exc = None
+            break
+        except Exception as e:
+            last_exc = e
+            is_retryable = any(m in str(e) for m in RETRYABLE_MARKERS)
+            if is_retryable and attempt < max_attempts:
+                logger.warning(
+                    f"Contention DB transitoire sur {request.method} {path} "
+                    f"(tentative {attempt}/{max_attempts}), retry…"
+                )
+                await asyncio.sleep(0.15 * attempt)
+                continue
+            break
+
+    if last_exc is not None:
+        e = last_exc
         import traceback as _tb
         tb_str = _tb.format_exc()
-        # Log complet avec traceback pour identifier la ligne exacte
+        # Log complet avec traceback pour identifier la ligne exacte (serveur uniquement)
         logger.error(
             f"=== ERREUR 500 sur {request.method} {path} ===\n"
             f"Type: {type(e).__name__}\n"
             f"Message: {e}\n"
             f"Traceback complet:\n{tb_str}"
         )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": "Erreur interne du serveur",
-                "detail": str(e)[:200],
-                "type": type(e).__name__,
-                "path": path,
-            }
-        )
+        # Ne JAMAIS exposer le détail technique (message d'exception, type,
+        # requête SQL...) au client — fuite d'information + mauvaise UX.
+        accept = request.headers.get("accept", "")
+        wants_json = "application/json" in accept or path.startswith("/api/")
+        if wants_json:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "error": "Une erreur temporaire est survenue. Merci de réessayer.",
+                    "path": path,
+                }
+            )
+        return HTMLResponse(status_code=500, content="""
+<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
+<title>Erreur temporaire — Livewatch</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body{background:#0f1420;color:#e5e7eb;font-family:-apple-system,Segoe UI,Roboto,sans-serif;
+display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;text-align:center;padding:20px}
+.box{max-width:420px}
+h1{font-size:22px;margin-bottom:10px}
+p{color:#9ca3af;margin-bottom:22px}
+a{background:#dc2626;color:#fff;text-decoration:none;padding:10px 22px;border-radius:99px;font-weight:700}
+</style></head><body>
+<div class="box">
+<h1>Erreur temporaire</h1>
+<p>Le service a rencontré un problème passager. Merci de réessayer dans un instant.</p>
+<a href="/">Retour à l'accueil</a>
+</div></body></html>
+""")
 
     # Ajouter les headers de performance
     process_time = time.time() - start_time
