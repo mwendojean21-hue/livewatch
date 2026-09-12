@@ -187,3 +187,43 @@ pour une bonne partie de ce que le backend expose déjà.
   `vercel.json` racine existait, avec le routage entre services
   frontend/backend, mais aucun fallback SPA à l'intérieur du service
   frontend lui-même).
+
+## Session 6 — 404 persistant, lecture des flux, logos, annonces
+
+- **404 au rafraîchissement, toujours présent malgré le fix précédent** :
+  je ne peux pas tester le comportement réel de la config Vercel
+  "multi-services" utilisée ici (`vercel.json` racine avec
+  `destination: {"service": ...}`), donc plutôt que de re-deviner, j'ai
+  ajouté un filet de sécurité indépendant de tout schéma Vercel : la
+  technique classique "spa-github-pages" (`frontend/public/404.html` qui
+  mémorise la route demandée puis redirige vers `/`, restaurée ensuite dans
+  `main.tsx` avant que React Router ne s'initialise). Ça fonctionne sur
+  n'importe quel hébergeur statique, indépendamment de la façon dont Vercel
+  interprète le `vercel.json` multi-services. Si ça ne suffit toujours pas
+  après redéploiement, le plus probable est que le rewrite `frontend/vercel.json`
+  de la session précédente n'a simplement pas encore été redéployé.
+- **Lecture des flux qui ne montre rien** : la vraie cause n'était pas le
+  proxy lui-même (les logs montrent des segments HLS récupérés avec succès
+  pendant plusieurs minutes pour certaines chaînes) mais des sources tierces
+  qui exigent un Referer HTTP précis (ex: France 24 a renvoyé une 400
+  "Source HTTP 400" en plein milieu d'une lecture qui fonctionnait). La
+  colonne `ExternalStream.referer` existait déjà dans le modèle (même dans
+  l'ancien code) mais n'était **lue nulle part** — encore un champ mort.
+  Branché de bout en bout : `/api/play/...` le renvoie, `/proxy/stream` et
+  `/proxy/audio` l'acceptent maintenant en paramètre `headers`, et le
+  panneau admin permet de le définir par chaîne (bouton 🔗 sur chaque flux,
+  + champ dans le formulaire de création).
+- **Logos de chaînes invisibles/moches** : le nouveau code affichait les
+  logos en `object-cover` plein cadre façon miniature vidéo, sans aucun
+  filet si l'image ne chargeait pas (très fréquent avec des logos d'IPTV
+  publics). L'ancienne version les affichait `object-contain` sur fond
+  neutre, comme un badge, avec repli propre vers l'icône de catégorie si
+  l'image échoue. Reproduit à l'identique dans `StreamCard.tsx`, y compris
+  pour les chaînes "forcées" en tête d'accueil.
+- **Annonces admin invisibles pour les visiteurs** : confirmé dans le code
+  backend lui-même — le commentaire de `/api/announcements/active` dit
+  explicitement "pour les utilisateurs dans la section Événements". Ce
+  n'était donc pas une confusion de ta part : l'intention d'origine était
+  bien là, juste jamais câblée côté frontend. Ajouté en haut de la page
+  Événements, avec un style selon le type (info/avertissement/mise à
+  jour/nouveauté).

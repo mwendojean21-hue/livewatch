@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Trash2, Check, Ban, Power, Star, Megaphone, Plus } from 'lucide-react'
+import { Trash2, Check, Ban, Power, Star, Megaphone, Plus, Link2 } from 'lucide-react'
 import { api } from '@/api/client'
 import type {
   AdminReport, AdminExternalStream, AdminComment, AdminBlockedIp,
@@ -64,7 +64,7 @@ export function ReportsPanel() {
 export function ExternalStreamsPanel() {
   const [items, setItems] = useState<AdminExternalStream[] | null>(null)
   const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState({ title: '', stream_url: '', category: 'general', country: '', stream_type: 'hls', logo: '', quality: 'HD' })
+  const [form, setForm] = useState({ title: '', stream_url: '', category: 'general', country: '', stream_type: 'hls', logo: '', quality: 'HD', referer: '' })
 
   const load = () => { api.adminExternalStreams().then(setItems).catch(() => setItems([])) }
   useEffect(load, [])
@@ -73,7 +73,7 @@ export function ExternalStreamsPanel() {
     e.preventDefault()
     if (!form.title.trim() || !form.stream_url.trim()) return
     await api.createExternalStream(form).catch(() => {})
-    setForm({ title: '', stream_url: '', category: 'general', country: '', stream_type: 'hls', logo: '', quality: 'HD' })
+    setForm({ title: '', stream_url: '', category: 'general', country: '', stream_type: 'hls', logo: '', quality: 'HD', referer: '' })
     setShowForm(false)
     load()
   }
@@ -103,6 +103,7 @@ export function ExternalStreamsPanel() {
             <option value="iframe">iframe</option>
           </select>
           <input placeholder="URL du logo" value={form.logo} onChange={(e) => setForm({ ...form, logo: e.target.value })} className="rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none" />
+          <input placeholder="Referer personnalisé (optionnel — certaines sources l'exigent)" value={form.referer} onChange={(e) => setForm({ ...form, referer: e.target.value })} className="rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none sm:col-span-2" />
           <button type="submit" className="rounded-lg bg-accent-2 px-4 py-2 text-sm font-medium text-white sm:col-span-2">Créer</button>
         </form>
       )}
@@ -118,6 +119,18 @@ export function ExternalStreamsPanel() {
               <p className="truncate text-sm font-medium">{s.title} {!s.is_active && <span className="text-xs text-accent">(désactivé)</span>}</p>
               <p className="truncate text-xs text-ink-muted">{s.category} · {s.country ?? '—'} · {s.stream_type}</p>
             </div>
+            <IconButton
+              title={s.referer ? `Referer : ${s.referer}` : 'Définir un referer personnalisé'}
+              onClick={() => {
+                const value = window.prompt(
+                  "Referer à envoyer avec les requêtes vers ce flux (laisser vide pour retirer) — certaines sources comme France 24 le rejettent sans un Referer précis :",
+                  s.referer ?? '',
+                )
+                if (value !== null) api.editExternalStream(s.id, { referer: value }).then(load)
+              }}
+            >
+              <Link2 size={15} className={s.referer ? 'text-accent-2' : undefined} />
+            </IconButton>
             <IconButton title={s.is_active ? 'Désactiver' : 'Activer'} onClick={() => api.toggleExternalStream(s.id).then(load)}>
               <Power size={15} />
             </IconButton>

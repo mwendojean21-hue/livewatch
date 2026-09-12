@@ -1,7 +1,7 @@
 import type {
   CatalogStream, PublicStats, AdminSummary, EventDTO, CommentDTO, SearchResult, FavoriteItem,
   CountryDTO, CountryChannelsDTO, AdminReport, AdminExternalStream, AdminComment, AdminBlockedIp,
-  AdminFeedbackItem, AdminAnnouncementItem, SimilarStream,
+  AdminFeedbackItem, AdminAnnouncementItem, SimilarStream, PublicAnnouncement,
 } from '@/types/api'
 import {
   MOCK_STREAMS, MOCK_PUBLIC_STATS, MOCK_ADMIN_SUMMARY, MOCK_EVENTS, MOCK_COMMENTS,
@@ -122,7 +122,7 @@ export const api = {
    * lien de page /watch/..., jamais l'URL du média — voir /api/play côté
    * backend). `kind` vient du paramètre de route (:kind dans /watch/:kind/:id). */
   resolvePlayback: (kind: string, id: string) =>
-    request<{ stream_type: string; url: string; title?: string }>(`/api/play/${kind}/${id}`),
+    request<{ stream_type: string; url: string; title?: string; headers?: string | null }>(`/api/play/${kind}/${id}`),
 
   similarStreams: (id: string) =>
     withFallback(() => request<{ similar: SimilarStream[] }>(`/api/streams/${id}/similar`).then((r) => r.similar), []),
@@ -153,6 +153,12 @@ export const api = {
 
   events: () =>
     withFallback(() => request<{ events: EventDTO[] }>('/api/events/upcoming').then((r) => r.events), MOCK_EVENTS),
+
+  /** Annonces actives visibles par tous les visiteurs — le backend les
+   * place volontairement dans "Événements" (voir le commentaire de
+   * l'endpoint côté serveur), pas dans un bandeau global. */
+  activeAnnouncements: () =>
+    withFallback(() => request<PublicAnnouncement[]>('/api/announcements/active'), []),
 
   /** Liste des pays disponibles dans le catalogue IPTV, avec un compte de
    * chaînes par pays — sert au bandeau de drapeaux de la page d'accueil. */

@@ -71,11 +71,14 @@ export function WatchPage() {
   // /api/play renvoie soit une URL d'embed YouTube directement jouable, soit
   // l'URL brute du flux — qu'il faut systématiquement faire passer par le
   // proxy backend (CORS / referer souvent bloqués sur les flux IPTV bruts).
+  // Certaines sources (ex: France 24) exigent un Referer précis renvoyé par
+  // le backend (champ ExternalStream.referer) — on le repasse tel quel.
+  const extraHeaders = playback.headers ? `&headers=${encodeURIComponent(playback.headers)}` : ''
   const playerSrc = playback.stream_type === 'youtube'
     ? playback.url
     : playback.stream_type === 'audio'
-      ? `/proxy/audio?url=${encodeURIComponent(playback.url)}`
-      : `/proxy/stream?url=${encodeURIComponent(playback.url)}`
+      ? `/proxy/audio?url=${encodeURIComponent(playback.url)}${extraHeaders}`
+      : `/proxy/stream?url=${encodeURIComponent(playback.url)}${extraHeaders}`
 
   return (
     <div className="mx-auto max-w-5xl">

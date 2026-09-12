@@ -4085,7 +4085,7 @@ async def proxy_segment_options():
     )
 
 @app.get("/proxy/audio")
-async def proxy_audio_route(url: str):
+async def proxy_audio_route(url: str, headers: str = None):
     """
     Proxy dédié pour les flux audio (MP3, AAC, OGG…).
     Supporte le streaming progressif avec gestion des Range requests.
@@ -4101,6 +4101,11 @@ async def proxy_audio_route(url: str):
             "Referer": origin + "/",
             "Connection": "keep-alive",
         }
+        if headers:
+            try:
+                req_headers.update(json.loads(headers))
+            except Exception:
+                pass
 
         async def audio_stream_generator(stream_url: str, hdrs: dict):
             async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
@@ -5464,6 +5469,7 @@ async def resolve_playback(kind: str, stream_id: str, db: Session = Depends(get_
       directement (CORS / hotlink protection sur la plupart des flux IPTV).
     """
     kind = kind.lower()
+    referer = None
 
     if kind == "external":
         obj = db.query(ExternalStream).filter(ExternalStream.id == stream_id).first()
@@ -5472,6 +5478,7 @@ async def resolve_playback(kind: str, stream_id: str, db: Session = Depends(get_
         obj.viewers = (obj.viewers or 0) + 1
         db.commit()
         raw_url, stream_type, title = obj.url, obj.stream_type, obj.title
+        referer = obj.referer or None
     elif kind == "iptv":
         obj = db.query(IPTVChannel).filter(IPTVChannel.id == stream_id).first()
         if not obj:
@@ -5506,6 +5513,11 @@ async def resolve_playback(kind: str, stream_id: str, db: Session = Depends(get_
         "stream_type": stream_type,
         "url":         raw_url,
         "title":       title,
+        # Referer personnalisé pour cette chaîne (champ ExternalStream.referer,
+        # jusqu'ici jamais lu nulle part — certaines sources comme France 24
+        # exigent un Referer précis et renvoient 400/403 sans lui). Le
+        # frontend le repasse à /proxy/stream via son paramètre `headers`.
+        "headers":     json.dumps({"Referer": referer}) if referer else None,
     })
 
 
@@ -5746,6 +5758,7 @@ async def admin_list_external(request: Request, db: Session = Depends(get_db)):
             "stream_type": s.stream_type,
             "is_active":   s.is_active,
             "viewers":     s.viewers or 0,
+            "referer":     s.referer,
         } for s in streams]
     })
 
@@ -5760,6 +5773,7 @@ async def admin_edit_external_form(
     country:     str = Form(None),
     logo:        str = Form(None),
     quality:     str = Form(None),
+    referer:     str = Form(None),
     db: Session = Depends(get_db),
 ):
     """Alias POST de PUT /api/admin/external/{id}/edit : un <form> HTML classique
@@ -5780,6 +5794,8 @@ async def admin_edit_external_form(
     if country:     stream.country     = country.upper()[:5]
     if logo:        stream.logo        = logo[:500]
     if quality:     stream.quality     = quality[:20]
+    if referer is not None:
+        stream.referer = referer[:500] or None
     db.commit()
     return JSONResponse({"success": True, "message": "Flux mis à jour"})
 
@@ -5796,6 +5812,7 @@ async def admin_create_external(
     logo:        str = Form(""),
     description: str = Form(""),
     quality:     str = Form(""),
+    referer:     str = Form(""),
     db: Session = Depends(get_db)
 ):
     """Créer un nouveau flux externe"""
@@ -5813,6 +5830,7 @@ async def admin_create_external(
         language=language[:50],
         logo=logo[:500],
         quality=quality[:20],
+        referer=(referer[:500] if referer else None),
         is_active=True,
     )
     db.add(stream)

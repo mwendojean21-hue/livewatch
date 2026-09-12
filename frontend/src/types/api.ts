@@ -125,6 +125,7 @@ export interface AdminExternalStream {
   stream_type: string;
   is_active: boolean;
   viewers: number;
+  referer: string | null;
 }
 
 export interface AdminComment {
@@ -163,6 +164,14 @@ export interface AdminAnnouncementItem {
   is_active: boolean;
   created_at: string;
   expires_at: string | null;
+}
+
+export interface PublicAnnouncement {
+  id: string;
+  title: string;
+  message: string;
+  type: string;
+  created_at: string;
 }
 
 export interface SimilarStream {
