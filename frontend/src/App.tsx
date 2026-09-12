@@ -5,6 +5,7 @@ import { LoadingFallback } from '@/components/ui'
 
 const HomePage = lazy(() => import('@/pages/HomePage').then((m) => ({ default: m.HomePage })))
 const CountryPage = lazy(() => import('@/pages/CountryPage').then((m) => ({ default: m.CountryPage })))
+const CountriesPage = lazy(() => import('@/pages/CountriesPage').then((m) => ({ default: m.CountriesPage })))
 const SearchPage = lazy(() => import('@/pages/SearchPage').then((m) => ({ default: m.SearchPage })))
 const WatchPage = lazy(() => import('@/pages/WatchPage').then((m) => ({ default: m.WatchPage })))
 const GoLivePage = lazy(() => import('@/pages/GoLivePage').then((m) => ({ default: m.GoLivePage })))
@@ -25,6 +26,7 @@ export default function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/category/:categoryId" element={<HomePage />} />
           <Route path="/country/:countryCode" element={<CountryPage />} />
+          <Route path="/countries" element={<CountriesPage />} />
           <Route path="/search" element={<SearchPage />} />
           <Route path="/watch/:kind/:streamId" element={<WatchPage />} />
           <Route path="/go-live" element={<GoLivePage />} />

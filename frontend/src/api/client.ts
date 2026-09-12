@@ -1,7 +1,7 @@
 import type {
   CatalogStream, PublicStats, AdminSummary, EventDTO, CommentDTO, SearchResult, FavoriteItem,
   CountryDTO, CountryChannelsDTO, AdminReport, AdminExternalStream, AdminComment, AdminBlockedIp,
-  AdminFeedbackItem, AdminAnnouncementItem,
+  AdminFeedbackItem, AdminAnnouncementItem, SimilarStream,
 } from '@/types/api'
 import {
   MOCK_STREAMS, MOCK_PUBLIC_STATS, MOCK_ADMIN_SUMMARY, MOCK_EVENTS, MOCK_COMMENTS,
@@ -124,6 +124,9 @@ export const api = {
   resolvePlayback: (kind: string, id: string) =>
     request<{ stream_type: string; url: string; title?: string }>(`/api/play/${kind}/${id}`),
 
+  similarStreams: (id: string) =>
+    withFallback(() => request<{ similar: SimilarStream[] }>(`/api/streams/${id}/similar`).then((r) => r.similar), []),
+
   /** POST /admin/login attend un formulaire (pas du JSON) et répond par une
    * redirection 303 vers /admin/dashboard en cas de succès, ou renvoie la
    * page de connexion (HTML, 200) avec un message d'erreur sinon. On suit la
@@ -189,10 +192,16 @@ export const api = {
     request(`/api/streams/${streamId}/report`, { method: 'POST', body: toFormData({ reason }) }),
 
   createStream: (payload: { title: string; category: string; description?: string; tags?: string }) =>
-    request<{ success: boolean; stream_id: string; stream_key: string; watch_url: string }>(
+    request<{ success: boolean; stream_id: string; stream_key: string; rtmp_url: string; hls_url: string; watch_url: string }>(
       '/api/streams/create',
       { method: 'POST', body: toFormData(payload) },
-    ).then((r) => ({ id: r.stream_id, stream_key: r.stream_key })),
+    ).then((r) => ({ id: r.stream_id, stream_key: r.stream_key, rtmpUrl: r.rtmp_url, hlsUrl: r.hls_url, watchUrl: r.watch_url })),
+
+  /** Marque le direct comme réellement en ligne (le rend visible dans le
+   * catalogue/la recherche) — l'ancienne version appelait ceci séparément
+   * de la création, une fois la diffusion effectivement démarrée. */
+  startStream: (id: string) => request(`/api/streams/${id}/start`, { method: 'POST' }),
+  stopStream: (id: string) => request(`/api/streams/${id}/stop`, { method: 'POST' }),
 
   favorites: () =>
     withFallback(

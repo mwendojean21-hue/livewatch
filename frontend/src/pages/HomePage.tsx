@@ -1,4 +1,4 @@
-import { useParams } from 'react-router-dom'
+import { useParams, Link } from 'react-router-dom'
 import { Radio, Users, Tv2, Flame } from 'lucide-react'
 import { api } from '@/api/client'
 import { useAsync } from '@/hooks/useApi'
@@ -10,6 +10,17 @@ import { getCategory } from '@/lib/categories'
 
 function formatCompact(n: number) {
   return new Intl.NumberFormat('fr-FR', { notation: 'compact' }).format(n)
+}
+
+/** Salutation selon l'heure locale du visiteur — l'ancien code n'avait pas
+ * cette logique du tout (le texte "Bonsoir" était figé en dur), d'où le
+ * bug : ce n'est pas une régression du portage, juste jamais implémenté. */
+function greeting(): string {
+  const h = new Date().getHours()
+  if (h < 5) return 'Bonne nuit'
+  if (h < 12) return 'Bonjour'
+  if (h < 18) return 'Bon après-midi'
+  return 'Bonsoir'
 }
 
 export function HomePage() {
@@ -25,7 +36,7 @@ export function HomePage() {
 
       <div className="mb-6">
         <h1 className="font-display text-2xl font-semibold sm:text-3xl">
-          {cat ? cat.name : 'Bonsoir 👋'}
+          {cat ? cat.name : `${greeting()} 👋`}
         </h1>
         <p className="mt-1 text-sm text-ink-muted">
           {cat ? `Toutes les chaînes ${cat.name.toLowerCase()} en direct` : 'Voici ce qui se passe en direct maintenant.'}
@@ -47,7 +58,10 @@ export function HomePage() {
 
       {!categoryId && (
         <div className="mb-7">
-          <p className="mb-2.5 text-sm font-medium text-ink-muted">Parcourir par pays</p>
+          <div className="mb-2.5 flex items-center justify-between">
+            <p className="text-sm font-medium text-ink-muted">Parcourir par pays</p>
+            <Link to="/countries" className="text-xs font-medium text-accent-2 hover:underline">Voir tout →</Link>
+          </div>
           <CountryRail />
         </div>
       )}

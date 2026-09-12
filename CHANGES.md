@@ -103,3 +103,42 @@ pour une bonne partie de ce que le backend expose déjà.
 - Toujours pas d'accès réseau ici pour lancer `npm install`/`npm run build` —
   tout a été relu à la main (imports, accolades/parenthèses équilibrées) mais
   jamais réellement compilé. À valider avant déploiement.
+
+## Session 3 — corrections signalées après capture d'écran
+
+- **Salutation figée sur « Bonsoir »** : ce n'était pas une régression du
+  portage, le texte était simplement écrit en dur (`'Bonsoir 👋'`) sans
+  aucune logique horaire, y compris dans l'ancien code. Ajout d'une vraie
+  fonction `greeting()` (Bonjour / Bon après-midi / Bonsoir / Bonne nuit
+  selon l'heure locale).
+- **Cartes pays repensées** : l'ancienne version affichait les pays comme de
+  vraies cartes avec photo de drapeau en fond (flagcdn.com), dégradé sombre,
+  nom + nombre de chaînes en overlay — pas des puces arrondies. Remplacé
+  (`components/CountryCard.tsx`), avec en plus une page `/countries` dédiée
+  reprenant le filtre par continent de l'ancienne version (mêmes 8
+  catégories : Tous, Afrique, Europe, Asie, Am. Nord, Am. Sud, Océanie,
+  Moyen-Orient) et un tri (alphabétique comme avant, + nombre de chaînes en
+  plus, dans le même esprit que l'affichage existant).
+- **Go Live incomplet** : le formulaire créait le direct mais n'utilisait
+  jamais `POST /api/streams/{id}/start` ni `/stop` (qui existent côté
+  backend et contrôlent la visibilité du direct dans le catalogue/la
+  recherche), et n'affichait que la clé sans l'URL du serveur RTMP. Réécrit
+  pour afficher les deux, avec un bouton « Je suis en direct » / « Arrêter »
+  qui appelle réellement ces routes, plus un lien vers la page du direct une
+  fois actif.
+  **Point important à savoir** : ni l'ancien ni le nouveau code n'ont de
+  vrai serveur d'ingestion RTMP qui tourne quelque part (pas de
+  docker-compose, pas de nginx-rtmp, rien dans le dépôt) — `rtmp://localhost/live/...`
+  ne fonctionnera jamais tel quel sur un déploiement Vercel serverless. Ce
+  n'est donc pas une régression du portage : cette partie du flux était déjà
+  non fonctionnelle dans l'ancienne version elle-même, à moins qu'un serveur
+  média séparé existe ailleurs (pas dans ce dépôt). Pour un vrai Go Live, il
+  faudrait un service RTMP→HLS externe (ex: Mux, Cloudflare Stream,
+  ou un node-media-server hébergé séparément).
+- **« Chaînes similaires » toujours vide** : le frontend filtrait les 100
+  premiers éléments du catalogue en mémoire, ce qui ratait presque tout. Il
+  existe un vrai endpoint dédié (`GET /api/streams/{id}/similar`, déjà
+  présent côté backend) — le frontend l'utilise maintenant. Reste une
+  limite : cet endpoint ne couvre que les flux `external`, pas encore les
+  chaînes IPTV individuelles (section vide pour ces dernières, mais plus
+  d'erreur silencieuse).

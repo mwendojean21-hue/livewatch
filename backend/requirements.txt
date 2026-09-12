@@ -14,4 +14,3 @@ Pillow==10.4.0
 m3u8==5.1.0
 python-dateutil==2.9.0.post0
 yt-dlp==2024.8.6
-sqlalchemy-cockroachdb==2.0.2

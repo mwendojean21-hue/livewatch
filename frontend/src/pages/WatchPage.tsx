@@ -30,6 +30,12 @@ export function WatchPage() {
     [kind, id],
   )
 
+  // "Chaînes similaires" : l'ancien code a un vrai endpoint dédié pour ça
+  // (GET /api/streams/{id}/similar), plus fiable qu'un filtrage local sur les
+  // 100 premiers éléments du catalogue (qui ratait tout ce qui n'était pas
+  // dans cette première page, d'où la section vide observée).
+  const { data: similar } = useAsync(() => api.similarStreams(id), [id])
+
   const { data: comments } = useAsync(() => api.comments(id), [id])
   const [liked, setLiked] = useState(false)
   const [likeCount, setLikeCount] = useState<number | null>(null)
@@ -150,9 +156,16 @@ export function WatchPage() {
         <div>
           <SectionHeading title="Chaînes similaires" />
           <div className="grid gap-3">
-            {stream && all?.filter((s) => s.id !== id && s.category === stream.category).slice(0, 4).map((s) => (
-              <StreamCard key={s.id} stream={s} />
-            ))}
+            {similar && similar.length > 0
+              ? similar.map((s) => (
+                  <StreamCard
+                    key={s.id}
+                    stream={{ ...s, quality: '', logo: s.logo || '' }}
+                  />
+                ))
+              : similar && (
+                  <p className="text-sm text-ink-muted">Aucune chaîne similaire pour l'instant.</p>
+                )}
           </div>
         </div>
       </div>

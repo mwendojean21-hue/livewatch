@@ -165,6 +165,16 @@ export interface AdminAnnouncementItem {
   expires_at: string | null;
 }
 
+export interface SimilarStream {
+  id: string;
+  title: string;
+  logo: string;
+  country: string;
+  category: string;
+  stream_type: string;
+  url: string;
+}
+
 export interface SearchResult {
   results: CatalogStream[];
   total: number;
