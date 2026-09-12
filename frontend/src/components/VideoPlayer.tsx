@@ -15,7 +15,7 @@ export function VideoPlayer({ src, type = 'hls', poster, title }: Props) {
 
   useEffect(() => {
     setError(null)
-    if (type === 'youtube' || type === 'iframe') return
+    if (type === 'youtube' || type === 'iframe' || type === 'audio') return
     const video = videoRef.current
     if (!video) return
 
@@ -46,6 +46,15 @@ export function VideoPlayer({ src, type = 'hls', poster, title }: Props) {
           allowFullScreen
           className="h-full w-full border-0"
         />
+      </div>
+    )
+  }
+
+  if (type === 'audio') {
+    return (
+      <div className="flex aspect-video w-full flex-col items-center justify-center gap-4 rounded-2xl bg-black text-white">
+        <span className="text-sm text-white/70">{title}</span>
+        <audio src={src} controls autoPlay className="w-11/12 max-w-md" />
       </div>
     )
   }

@@ -4,6 +4,7 @@ import { api } from '@/api/client'
 import { useAsync } from '@/hooks/useApi'
 import { DemoBanner, SectionHeading, StatCard } from '@/components/ui'
 import { CategoryRail } from '@/components/CategoryRail'
+import { CountryRail } from '@/components/CountryRail'
 import { StreamCard, StreamCardSkeleton } from '@/components/StreamCard'
 import { getCategory } from '@/lib/categories'
 
@@ -43,6 +44,13 @@ export function HomePage() {
       <div className="mb-7">
         <CategoryRail />
       </div>
+
+      {!categoryId && (
+        <div className="mb-7">
+          <p className="mb-2.5 text-sm font-medium text-ink-muted">Parcourir par pays</p>
+          <CountryRail />
+        </div>
+      )}
 
       <SectionHeading title={cat ? `${cat.name} en direct` : 'En direct maintenant'} />
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">

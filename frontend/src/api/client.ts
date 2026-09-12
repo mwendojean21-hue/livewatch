@@ -1,9 +1,31 @@
 import type {
   CatalogStream, PublicStats, AdminSummary, EventDTO, CommentDTO, SearchResult, FavoriteItem,
+  CountryDTO, CountryChannelsDTO, AdminReport, AdminExternalStream, AdminComment, AdminBlockedIp,
+  AdminFeedbackItem, AdminAnnouncementItem,
 } from '@/types/api'
 import {
   MOCK_STREAMS, MOCK_PUBLIC_STATS, MOCK_ADMIN_SUMMARY, MOCK_EVENTS, MOCK_COMMENTS,
 } from './mockData'
+
+/** Forme brute renvoyée par GET /api/admin/dashboard/summary (Livewatch.py).
+ * Le backend renvoie à la fois cette forme imbriquée "historique" et les
+ * champs à plat attendus par AdminSummary (voir mapAdminSummary ci-dessous) —
+ * on les type tous les deux ici pour rester robuste si l'un des deux évolue. */
+interface RawAdminSummary extends Partial<AdminSummary> {
+  streams?: { total: number; live: number; new_24h: number; blocked: number }
+  moderation?: { pending_reports: number }
+}
+
+function mapAdminSummary(raw: RawAdminSummary): AdminSummary {
+  return {
+    live_now: raw.live_now ?? raw.streams?.live ?? 0,
+    total_viewers: raw.total_viewers ?? 0,
+    total_channels: raw.total_channels ?? 0,
+    new_reports: raw.new_reports ?? raw.moderation?.pending_reports ?? 0,
+    category_breakdown: raw.category_breakdown ?? [],
+    viewers_trend: raw.viewers_trend ?? [],
+  }
+}
 
 /**
  * Client API pour le backend FastAPI (Livewatch.py).
@@ -89,12 +111,18 @@ export const api = {
     withFallback(() => request<PublicStats>('/api/stats/public'), MOCK_PUBLIC_STATS),
 
   adminSummary: () =>
-    withFallback(() => request<AdminSummary>('/api/admin/dashboard/summary'), MOCK_ADMIN_SUMMARY),
+    withFallback(() => request<RawAdminSummary>('/api/admin/dashboard/summary').then(mapAdminSummary), MOCK_ADMIN_SUMMARY),
 
   /** Comme adminSummary(), mais sans repli démo : sert à détecter un vrai
    * 401 (non connecté) pour afficher le formulaire de connexion plutôt que
    * des données d'exemple. */
-  adminSummaryAuthed: () => request<AdminSummary>('/api/admin/dashboard/summary'),
+  adminSummaryAuthed: () => request<RawAdminSummary>('/api/admin/dashboard/summary').then(mapAdminSummary),
+
+  /** Résout l'URL de lecture réelle d'un flux (le catalogue ne renvoie qu'un
+   * lien de page /watch/..., jamais l'URL du média — voir /api/play côté
+   * backend). `kind` vient du paramètre de route (:kind dans /watch/:kind/:id). */
+  resolvePlayback: (kind: string, id: string) =>
+    request<{ stream_type: string; url: string; title?: string }>(`/api/play/${kind}/${id}`),
 
   /** POST /admin/login attend un formulaire (pas du JSON) et répond par une
    * redirection 303 vers /admin/dashboard en cas de succès, ou renvoie la
@@ -122,6 +150,23 @@ export const api = {
 
   events: () =>
     withFallback(() => request<{ events: EventDTO[] }>('/api/events/upcoming').then((r) => r.events), MOCK_EVENTS),
+
+  /** Liste des pays disponibles dans le catalogue IPTV, avec un compte de
+   * chaînes par pays — sert au bandeau de drapeaux de la page d'accueil. */
+  countries: () =>
+    withFallback(
+      () => request<{ countries: CountryDTO[] }>('/api/iptv/countries').then((r) => r.countries),
+      [] as CountryDTO[],
+    ),
+
+  /** Chaînes (externes + IPTV) d'un pays donné. Les deux tableaux renvoient
+   * déjà des `url` au format /watch/{kind}/{id}, directement utilisables par
+   * <Link>/StreamCard. */
+  channelsByCountry: (code: string) =>
+    withFallback(
+      () => request<CountryChannelsDTO>(`/api/channels/by-country/${encodeURIComponent(code)}`),
+      { country: code, external: [], iptv: [], total: 0 } as CountryChannelsDTO,
+    ),
 
   comments: (streamId: string) =>
     withFallback(
@@ -169,4 +214,51 @@ export const api = {
 
   submitFeedback: (payload: { message: string; email?: string; rating?: number }) =>
     request('/api/feedback/submit', { method: 'POST', body: toFormData(payload) }),
+
+  // ── Modération admin ──────────────────────────────────────────────────
+  // Toutes ces routes exigent la session admin (cookie posé par adminLogin).
+
+  adminReports: () =>
+    request<{ reports: AdminReport[] }>('/api/admin/reports').then((r) => r.reports),
+  resolveReport: (id: string) =>
+    request(`/api/admin/reports/${id}/resolve`, { method: 'POST' }),
+
+  adminExternalStreams: () =>
+    request<{ streams: AdminExternalStream[] }>('/api/admin/external/list').then((r) => r.streams),
+  createExternalStream: (payload: Record<string, string>) =>
+    request('/api/admin/external/create', { method: 'POST', body: toFormData(payload) }),
+  editExternalStream: (id: string, payload: Record<string, string>) =>
+    request(`/api/admin/external/${id}/edit`, { method: 'POST', body: toFormData(payload) }),
+  toggleExternalStream: (id: string) =>
+    request(`/api/admin/external/${id}/toggle`, { method: 'POST' }),
+  deleteExternalStream: (id: string) =>
+    request(`/api/admin/external/${id}/delete`, { method: 'DELETE' }),
+
+  adminComments: (limit = 50) =>
+    request<{ comments: AdminComment[] }>(`/api/admin/comments/recent?limit=${limit}`).then((r) => r.comments),
+  deleteComment: (id: string) =>
+    request(`/api/admin/comments/${id}/delete`, { method: 'POST' }),
+
+  adminIps: () =>
+    request<{ ips: AdminBlockedIp[] }>('/api/admin/ips/list').then((r) => r.ips),
+  blockIp: (ipAddress: string, reason: string, permanent = false) =>
+    request('/api/admin/ips/block', { method: 'POST', body: toFormData({ ip_address: ipAddress, reason, permanent: permanent ? 'true' : 'false' }) }),
+  unblockIp: (id: string) =>
+    request(`/api/admin/ips/${id}/unblock`, { method: 'POST' }),
+
+  adminFeedback: () =>
+    request<AdminFeedbackItem[]>('/api/admin/feedback'),
+  markFeedbackRead: (id: string) =>
+    request(`/api/admin/feedback/${id}/read`, { method: 'POST' }),
+  deleteFeedback: (id: string) =>
+    request(`/api/admin/feedback/${id}`, { method: 'DELETE' }),
+
+  adminAnnouncements: () =>
+    request<AdminAnnouncementItem[]>('/api/admin/announcements'),
+  createAnnouncement: (payload: { title: string; message: string; type: string; expires_hours?: string }) =>
+    request('/api/admin/announcements/create', { method: 'POST', body: toFormData(payload) }),
+  toggleAnnouncement: (id: string) =>
+    request(`/api/admin/announcements/${id}/toggle`, { method: 'POST' }),
+  deleteAnnouncement: (id: string) =>
+    request(`/api/admin/announcements/${id}`, { method: 'DELETE' }),
 }

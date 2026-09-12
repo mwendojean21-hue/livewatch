@@ -83,6 +83,88 @@ export interface AdminSummary {
   viewers_trend: { label: string; viewers: number }[];
 }
 
+export interface CountryDTO {
+  code: string;
+  count: number;
+}
+
+export interface CountryChannelItem {
+  id: string;
+  title?: string;
+  name?: string;
+  logo: string;
+  category?: string;
+  stream_type?: string;
+  url: string;
+}
+
+export interface CountryChannelsDTO {
+  country: string;
+  external: CountryChannelItem[];
+  iptv: CountryChannelItem[];
+  total: number;
+}
+
+export interface AdminReport {
+  id: string;
+  reason: string;
+  comment_id?: string | null;
+  stream_id?: string | null;
+  stream_type?: string | null;
+  created_at: string | null;
+}
+
+export interface AdminExternalStream {
+  id: string;
+  title: string;
+  category: string;
+  country: string | null;
+  url: string;
+  logo: string | null;
+  quality: string | null;
+  stream_type: string;
+  is_active: boolean;
+  viewers: number;
+}
+
+export interface AdminComment {
+  id: string;
+  content: string;
+  created_at: string;
+  report_count: number;
+  is_deleted: boolean;
+  is_auto_hidden: boolean;
+}
+
+export interface AdminBlockedIp {
+  id: string;
+  ip_address: string;
+  reason: string;
+  blocked_at: string;
+  is_permanent: boolean;
+  expires_at: string | null;
+}
+
+export interface AdminFeedbackItem {
+  id: string;
+  message: string;
+  email: string | null;
+  rating: number | null;
+  is_read: boolean;
+  created_at: string;
+  ip_address: string | null;
+}
+
+export interface AdminAnnouncementItem {
+  id: string;
+  title: string;
+  message: string;
+  type: string;
+  is_active: boolean;
+  created_at: string;
+  expires_at: string | null;
+}
+
 export interface SearchResult {
   results: CatalogStream[];
   total: number;

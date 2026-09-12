@@ -4636,11 +4636,20 @@ async def admin_unblock_stream(stream_id: str, request: Request, db: Session = D
 async def admin_delete_comment(comment_id: str, request: Request, db: Session = Depends(get_db)):
     try: require_admin(request)
     except HTTPException: return JSONResponse(status_code=401, content={"success": False, "error": "Non autorisé"})
+    # NB: /api/admin/comments/recent liste des ChatMessage, mais /api/streams/{id}/comments
+    # utilise le modèle Comment — deux tables séparées pour des espaces d'ID différents.
+    # On tente les deux pour que le bouton "supprimer" marche quelle que soit l'origine.
     comment = db.query(Comment).filter(Comment.id == comment_id).first()
     if comment:
         comment.is_deleted = True
         db.commit()
-    return JSONResponse({"success": True})
+        return JSONResponse({"success": True})
+    chat_msg = db.query(ChatMessage).filter(ChatMessage.id == comment_id).first()
+    if chat_msg:
+        chat_msg.is_deleted = True
+        db.commit()
+        return JSONResponse({"success": True})
+    return JSONResponse({"success": False, "error": "Commentaire introuvable"})
 
 @app.post("/api/admin/ips/block")
 async def admin_block_ip(
@@ -5392,15 +5401,24 @@ async def ping():
 @app.get("/api/stats/public")
 async def public_stats(db: Session = Depends(get_db)):
     """Statistiques publiques de la plateforme"""
+    from sqlalchemy import func
     live_streams  = db.query(LiveStream).filter(LiveStream.is_live == True, LiveStream.is_blocked == False).count()
     total_streams = db.query(LiveStream).filter(LiveStream.is_blocked == False).count()
     total_ch      = db.query(IPTVChannel).count()
     total_ext     = db.query(ExternalStream).filter(ExternalStream.is_active == True).count()
+    ext_viewers   = db.query(func.coalesce(func.sum(ExternalStream.viewers), 0)).filter(ExternalStream.is_active == True).scalar() or 0
+    live_viewers  = db.query(func.coalesce(func.sum(LiveStream.viewer_count), 0)).filter(LiveStream.is_live == True).scalar() or 0
     return JSONResponse({
+        # Champs historiques (consommés par les templates Jinja restants)
         "live_streams":    live_streams,
         "total_streams":   total_streams,
         "iptv_channels":   total_ch,
         "external_streams": total_ext,
+        # Champs consommés par le frontend React (src/types/api.ts PublicStats)
+        "live_now":              live_streams,
+        "total_viewers":         int(ext_viewers) + int(live_viewers),
+        "total_channels":        total_ch + total_ext,
+        "total_streams_today":   total_streams,
     })
 
 
@@ -5415,6 +5433,66 @@ async def get_viewer_count(stream_id: int, db: Session = Depends(get_db)):
 
 
 # ── Route like ────────────────────────────────────────────────────────────
+
+
+# ── Résolution de lecture unifiée (JSON, pour le frontend React) ──────────
+# Les pages /watch/external/{id} et /watch/iptv/{id} font ce même travail
+# mais renvoient du HTML (Jinja). Le frontend a besoin d'un équivalent JSON
+# pour construire l'URL du lecteur (VideoPlayer / proxy).
+@app.get("/api/play/{kind}/{stream_id}")
+async def resolve_playback(kind: str, stream_id: str, db: Session = Depends(get_db)):
+    """Retourne {stream_type, url, title, ...} prêt à consommer par le lecteur.
+
+    - kind == "external" | "iptv" | "user"
+    - Pour stream_type == "youtube", `url` est déjà une URL d'embed jouable.
+    - Sinon, `url` est l'URL brute du flux : le frontend doit la faire passer
+      par /proxy/stream (vidéo) ou /proxy/audio (audio) — jamais l'utiliser
+      directement (CORS / hotlink protection sur la plupart des flux IPTV).
+    """
+    kind = kind.lower()
+
+    if kind == "external":
+        obj = db.query(ExternalStream).filter(ExternalStream.id == stream_id).first()
+        if not obj:
+            raise HTTPException(status_code=404, detail="Flux introuvable")
+        obj.viewers = (obj.viewers or 0) + 1
+        db.commit()
+        raw_url, stream_type, title = obj.url, obj.stream_type, obj.title
+    elif kind == "iptv":
+        obj = db.query(IPTVChannel).filter(IPTVChannel.id == stream_id).first()
+        if not obj:
+            raise HTTPException(status_code=404, detail="Chaîne introuvable")
+        obj.viewers   = (obj.viewers or 0) + 1
+        obj.last_seen = datetime.utcnow()
+        db.commit()
+        raw_url, stream_type, title = obj.url, (obj.stream_type or "hls"), obj.name
+    elif kind == "user":
+        obj = db.query(UserStream).filter(UserStream.id == stream_id).first()
+        if not obj:
+            raise HTTPException(status_code=404, detail="Stream introuvable")
+        raw_url, stream_type, title = (obj.stream_url or ""), "hls", obj.title
+    else:
+        raise HTTPException(status_code=400, detail="type de flux inconnu")
+
+    if not raw_url or not raw_url.strip():
+        raise HTTPException(status_code=422, detail="URL de ce flux manquante ou invalide")
+
+    if stream_type == "youtube":
+        yt = await yt_service.get_stream_url(raw_url)
+        if yt.get("error"):
+            raise HTTPException(status_code=422, detail=yt["error"])
+        return JSONResponse({
+            "stream_type": "youtube",
+            "url":         yt.get("embed_url") or yt.get("hls_url") or yt.get("url"),
+            "title":       title,
+            "youtube":     yt,
+        })
+
+    return JSONResponse({
+        "stream_type": stream_type,
+        "url":         raw_url,
+        "title":       title,
+    })
 
 
 # ── Route YouTube URL extraction ──────────────────────────────────────────
@@ -5559,8 +5637,8 @@ async def admin_dashboard_summary(request: Request, db: Session = Depends(get_db
     total_iptv_ch      = db.query(IPTVChannel).count()
     total_iptv_pl      = db.query(IPTVPlaylist).count()
     total_visitors     = db.query(Visitor).count()
-    new_visitors_24h   = db.query(Visitor).filter(Visitor.first_seen >= last_24h).count()
-    new_visitors_7d    = db.query(Visitor).filter(Visitor.first_seen >= last_7d).count()
+    new_visitors_24h   = db.query(Visitor).filter(Visitor.created_at >= last_24h).count()
+    new_visitors_7d    = db.query(Visitor).filter(Visitor.created_at >= last_7d).count()
     total_comments     = db.query(ChatMessage).count()
     new_comments_24h   = db.query(ChatMessage).filter(ChatMessage.created_at >= last_24h).count()
     total_reports      = db.query(Report).count()
@@ -5570,6 +5648,13 @@ async def admin_dashboard_summary(request: Request, db: Session = Depends(get_db
     total_feedback     = db.query(UserFeedback).count()
     active_ann         = db.query(AdminAnnouncement).filter(AdminAnnouncement.is_active == True).count()
     tracked_locations  = db.query(UserLocation).count()
+
+    from sqlalchemy import func
+    ext_viewers  = db.query(func.coalesce(func.sum(ExternalStream.viewers), 0)).filter(ExternalStream.is_active == True).scalar() or 0
+    live_viewers = db.query(func.coalesce(func.sum(LiveStream.viewer_count), 0)).filter(LiveStream.is_live == True).scalar() or 0
+    category_rows = db.query(
+        ExternalStream.category, func.count(ExternalStream.id)
+    ).filter(ExternalStream.is_active == True).group_by(ExternalStream.category).all()
 
     return JSONResponse({
         "streams": {
@@ -5589,7 +5674,95 @@ async def admin_dashboard_summary(request: Request, db: Session = Depends(get_db
         },
         "feedback":     { "total": total_feedback, "unread": unread_feedback },
         "announcements": { "active": active_ann },
+        # Champs à plat consommés par le frontend React (src/types/api.ts AdminSummary)
+        "live_now":       live_streams,
+        "total_viewers":  int(ext_viewers) + int(live_viewers),
+        "total_channels": total_iptv_ch + total_external,
+        "new_reports":    pending_reports,
+        "category_breakdown": [{"category": c or "autre", "count": n} for c, n in category_rows],
+        # Pas d'historique de spectateurs stocké côté backend pour l'instant
+        # (aucune table de séries temporelles) : tableau vide plutôt que des
+        # chiffres inventés. Le graphique doit gérer ce cas proprement.
+        "viewers_trend": [],
     })
+
+
+# ── Listes JSON pour l'interface d'admin React ────────────────────────────
+# L'ancienne interface (Jinja) chargeait tout ça dans un seul rendu serveur
+# de /admin/dashboard. Le nouveau frontend a besoin de ces mêmes données en
+# JSON — elles n'existaient auparavant que sous forme de fragments HTML.
+@app.get("/api/admin/reports")
+async def admin_list_reports(request: Request, db: Session = Depends(get_db)):
+    """Liste des signalements non résolus, pour la modération."""
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error": "Non autorisé"})
+    reports = db.query(Report).filter(Report.resolved == False).order_by(desc(Report.created_at)).limit(200).all()
+    return JSONResponse({
+        "reports": [{
+            "id":          r.id,
+            "reason":      r.reason,
+            "comment_id":  r.comment_id,
+            "stream_id":   r.stream_id,
+            "stream_type": r.stream_type,
+            "created_at":  r.created_at.isoformat() if r.created_at else None,
+        } for r in reports]
+    })
+
+
+@app.get("/api/admin/external/list")
+async def admin_list_external(request: Request, db: Session = Depends(get_db)):
+    """Liste des flux externes, pour le CRUD admin."""
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error": "Non autorisé"})
+    streams = db.query(ExternalStream).order_by(desc(ExternalStream.created_at)).limit(300).all()
+    return JSONResponse({
+        "streams": [{
+            "id":          s.id,
+            "title":       s.title,
+            "category":    s.category,
+            "country":     s.country,
+            "url":         s.url,
+            "logo":        s.logo,
+            "quality":     s.quality,
+            "stream_type": s.stream_type,
+            "is_active":   s.is_active,
+            "viewers":     s.viewers or 0,
+        } for s in streams]
+    })
+
+
+@app.post("/api/admin/external/{stream_id}/edit")
+async def admin_edit_external_form(
+    stream_id: str,
+    request: Request,
+    title:       str = Form(None),
+    stream_url:  str = Form(None),
+    category:    str = Form(None),
+    country:     str = Form(None),
+    logo:        str = Form(None),
+    quality:     str = Form(None),
+    db: Session = Depends(get_db),
+):
+    """Alias POST de PUT /api/admin/external/{id}/edit : un <form> HTML classique
+    (et le client fetch utilisé par le frontend admin) ne peuvent pas envoyer de
+    corps multipart avec la méthode PUT aussi simplement qu'avec POST."""
+    try:
+        require_admin(request)
+    except HTTPException:
+        return JSONResponse(status_code=401, content={"error": "Non autorisé"})
+
+    stream = db.query(ExternalStream).filter(ExternalStream.id == stream_id).first()
+    if not stream:
+        raise HTTPException(status_code=404, detail="Flux introuvable")
+
+    if title:       stream.title       = title[:200]
+    if stream_url:  stream.url         = stream_url[:2000]
+    if category:    stream.category    = category
+    if country:     stream.country     = country.upper()[:5]
+    if logo:        stream.logo        = logo[:500]
+    if quality:     stream.quality     = quality[:20]
+    db.commit()
+    return JSONResponse({"success": True, "message": "Flux mis à jour"})
 
 
 @app.post("/api/admin/external/create")
@@ -5631,7 +5804,7 @@ async def admin_create_external(
 
 @app.put("/api/admin/external/{stream_id}/edit")
 async def admin_edit_external(
-    stream_id: int,
+    stream_id: str,
     request: Request,
     title:       str = Form(None),
     stream_url:  str = Form(None),
@@ -5971,23 +6144,19 @@ async def submit_report(
 
 
 @app.delete("/api/favorites/{stream_id}")
-async def remove_favorite(stream_id: str, stream_type: str, request: Request, db: Session = Depends(get_db)):
-    """Supprimer un favori spécifique"""
+async def delete_favorite(stream_id: str, stream_type: str = None, request: Request = None, db: Session = Depends(get_db)):
+    """Supprimer un favori spécifique (aligné sur la table Favorite, comme /api/favorites/add)"""
     visitor_id = get_visitor_id(request)
     visitor = db.query(Visitor).filter(Visitor.visitor_id == visitor_id).first()
     if not visitor:
         return JSONResponse({"success": False, "error": "Visiteur inconnu"})
 
-    import json as _json
-    try:
-        favs = _json.loads(visitor.favorites or "[]")
-    except Exception:
-        favs = []
-
-    favs = [f for f in favs if not (f.get("stream_id") == stream_id and f.get("stream_type") == stream_type)]
-    visitor.favorites = _json.dumps(favs)
+    q = db.query(Favorite).filter(Favorite.visitor_id == visitor.id, Favorite.stream_id == stream_id)
+    if stream_type:
+        q = q.filter(Favorite.stream_type == stream_type)
+    count = q.delete(synchronize_session=False)
     db.commit()
-    return JSONResponse({"success": True, "count": len(favs)})
+    return JSONResponse({"success": True, "removed": count})
 
 
 # ── Routes d'enregistrement streaming ────────────────────────────────────
@@ -6440,7 +6609,7 @@ async def admin_realtime_stats(request: Request, db: Session = Depends(get_db)):
     cutoff_24h = now - timedelta(hours=24)
     return JSONResponse({
         "active_users":    db.query(Visitor).filter(Visitor.last_seen >= cutoff_5m).count(),
-        "new_today":       db.query(Visitor).filter(Visitor.first_seen >= cutoff_24h).count(),
+        "new_today":       db.query(Visitor).filter(Visitor.created_at >= cutoff_24h).count(),
         "live_streams":    db.query(LiveStream).filter(LiveStream.is_live == True).count(),
         "pending_reports": db.query(Report).filter(Report.resolved == False).count(),
         "unread_feedback": db.query(UserFeedback).filter(UserFeedback.is_read == False).count(),
@@ -6537,9 +6706,8 @@ def _track_visit(request: Request, db: Session, page: str = "/"):
         visitor = db.query(Visitor).filter(Visitor.visitor_id == visitor_id).first()
         if visitor:
             visitor.last_seen  = now
-            visitor.last_page  = page[:200]
         else:
-            visitor = Visitor(visitor_id=visitor_id, ip_address=client_ip, user_agent=request.headers.get("user-agent","")[:500], first_seen=now, last_seen=now, page_count=1, last_page=page[:200], theme="auto", preferred_language="fr", favorites="[]")
+            visitor = Visitor(visitor_id=visitor_id, ip_address=client_ip, user_agent=request.headers.get("user-agent","")[:500], last_seen=now, theme="auto", preferred_language="fr")
             db.add(visitor)
         db.commit()
     except Exception as e:
@@ -6994,9 +7162,9 @@ async def generate_daily_stats(db: Session) -> dict:
     stats = {
         "generated_at":       now.isoformat(),
         "total_visitors":     db.query(Visitor).count(),
-        "new_visitors_24h":   db.query(Visitor).filter(Visitor.first_seen >= yesterday).count(),
-        "new_visitors_7d":    db.query(Visitor).filter(Visitor.first_seen >= last_week).count(),
-        "new_visitors_30d":   db.query(Visitor).filter(Visitor.first_seen >= last_month).count(),
+        "new_visitors_24h":   db.query(Visitor).filter(Visitor.created_at >= yesterday).count(),
+        "new_visitors_7d":    db.query(Visitor).filter(Visitor.created_at >= last_week).count(),
+        "new_visitors_30d":   db.query(Visitor).filter(Visitor.created_at >= last_month).count(),
         "total_streams":      db.query(LiveStream).count(),
         "live_streams":       db.query(LiveStream).filter(LiveStream.is_live == True).count(),
         "total_ext_channels": db.query(ExternalStream).count(),
@@ -7223,8 +7391,8 @@ async def profile_page(request: Request, db: Session = Depends(get_db)):
     stream_count = 0
 
     if visitor:
-        if visitor.first_seen:
-            delta = now - visitor.first_seen.replace(tzinfo=timezone.utc) if visitor.first_seen.tzinfo is None else now - visitor.first_seen
+        if visitor.created_at:
+            delta = now - visitor.created_at.replace(tzinfo=timezone.utc) if visitor.created_at.tzinfo is None else now - visitor.created_at
             days = delta.days
             if days == 0:   member_since = "aujourd'hui"
             elif days == 1: member_since = "hier"
@@ -7232,9 +7400,8 @@ async def profile_page(request: Request, db: Session = Depends(get_db)):
             elif days < 365:member_since = f"il y a {days//30} mois"
             else:           member_since = f"il y a {days//365} an(s)"
         lang_pref = visitor.preferred_language or "fr"
-        import json as _j
         try:
-            fav_count = len(_j.loads(visitor.favorites or "[]"))
+            fav_count = db.query(Favorite).filter(Favorite.visitor_id == visitor.id).count()
         except Exception:
             fav_count = 0
 

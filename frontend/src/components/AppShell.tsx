@@ -1,7 +1,7 @@
 import { type ReactNode } from 'react'
 import { Link, NavLink, useNavigate } from 'react-router-dom'
 import {
-  Home, Search, Radio, Calendar, Settings, ShieldCheck, User, Cast, Menu,
+  Home, Search, Radio, Calendar, Settings, ShieldCheck, User, Cast, Menu, Download,
 } from 'lucide-react'
 import { useState } from 'react'
 import { ThemeToggle } from './ThemeToggle'
@@ -76,6 +76,15 @@ function MobileDrawer({ open, onClose }: { open: boolean; onClose: () => void })
         <nav className="flex flex-1 flex-col gap-1">
           {[...NAV, ...NAV_SECONDARY].map((item) => <NavItem key={item.to} {...item} onClick={onClose} />)}
         </nav>
+        <a
+          href="/static/livewatch.apk"
+          download
+          onClick={onClose}
+          className="mt-2 flex items-center gap-3 rounded-xl border-t border-white/10 px-3 py-2.5 pt-4 text-sm font-medium text-white/60 hover:text-white"
+        >
+          <Download size={18} strokeWidth={2} />
+          Télécharger l'appli
+        </a>
       </aside>
     </div>
   )
@@ -157,6 +166,14 @@ export function AppShell({ children }: { children: ReactNode }) {
           </form>
 
           <div className="ml-auto flex items-center gap-2.5">
+            <a
+              href="/static/livewatch.apk"
+              download
+              title="Télécharger l'application Android"
+              className="hidden h-9 w-9 items-center justify-center rounded-lg text-ink-muted hover:bg-surface-2 hover:text-ink sm:flex"
+            >
+              <Download size={18} />
+            </a>
             <ThemeToggle />
             <Link
               to="/go-live"
