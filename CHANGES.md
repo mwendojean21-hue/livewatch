@@ -142,3 +142,48 @@ pour une bonne partie de ce que le backend expose déjà.
   limite : cet endpoint ne couvre que les flux `external`, pas encore les
   chaînes IPTV individuelles (section vide pour ces dernières, mais plus
   d'erreur silencieuse).
+
+## Session 4 — recherche cassée + ordre des chaînes en accueil
+
+- **`GET /api/search` plantait toujours** (500) : même bug que celui déjà vu
+  ailleurs — `ExternalStream.description` n'existe pas comme colonne. La
+  recherche tombait donc systématiquement en mode démo côté frontend (d'où
+  "0 résultat" pour "france 24" alors que la chaîne existe bien dans le
+  catalogue). Corrigé pour chercher dans title/subcategory/category/country,
+  comme le faisait l'ancienne page de recherche HTML.
+- **« En direct maintenant » triait par ordre d'insertion, pas par
+  popularité** : `/api/catalog` et `/api/channels/featured` faisaient
+  `ORDER BY id DESC` (= les derniers synchronisés en premier, d'où NPO 3 /
+  VRT Ketnet / NRK 2 au hasard des lots IPTV). L'ancienne page d'accueil
+  triait par `desc(ExternalStream.viewers)` — les chaînes les plus vues
+  d'abord. Remonté à l'identique sur les deux endpoints.
+  **Limite honnête** : le compteur `viewers` ne se remplit que quand
+  quelqu'un regarde réellement une chaîne (incrémenté par `/api/play/...`
+  depuis la Session 1). Sur un déploiement encore peu visité, beaucoup de
+  chaînes sont à 0 vue et l'ordre entre elles reste donc proche de l'ancien
+  tri par insertion en attendant du vrai trafic — France 24 remontera
+  naturellement au fur et à mesure qu'elle sera regardée, mais je n'ai pas
+  inventé de chiffres de popularité de départ (aurait été fabriqué, pas une
+  vraie donnée).
+
+## Session 5 — chaînes populaires forcées + 404 au rafraîchissement
+
+- **Chaînes populaires forcées** (`backend/Livewatch.py`) : ajout d'une
+  liste `POPULAR_CHANNEL_KEYWORDS` (France 24, BBC, CNN International, Al
+  Jazeera, Euronews, CGTN, DW, BFM TV, Sky News, RT, TF1, France 2, M6 —
+  toutes déjà présentes dans les données seedées, vérifié avant de les
+  lister). `/api/catalog` et `/api/channels/featured` trient maintenant :
+  1) ces chaînes reconnaissables d'abord, 2) la vraie chaîne avant sa
+  version YouTube en doublon, 3) le reste par nombre de vues décroissant.
+  Ce n'est pas un chiffre inventé — juste une priorité d'affichage assumée,
+  qui ne dépend plus uniquement d'un compteur de vues qui part à 0.
+- **404 systématique en rafraîchissant une page type `/watch/external/...`** :
+  c'est le classique problème de SPA sur Vercel — en navigation directe
+  (rafraîchissement, lien partagé, favori), le serveur cherche un vrai
+  fichier à ce chemin au lieu de servir `index.html` et laisser React
+  Router prendre le relais. Il manquait un fallback SPA (`rewrites` vers
+  `/index.html`) dans le service frontend. Ajouté dans
+  `frontend/vercel.json` (nouveau fichier — jusqu'ici seul le
+  `vercel.json` racine existait, avec le routage entre services
+  frontend/backend, mais aucun fallback SPA à l'intérieur du service
+  frontend lui-même).

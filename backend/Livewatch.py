@@ -98,7 +98,7 @@ for _d in (TEMPLATES_DIR, UPLOADS_DIR, THUMBNAILS_DIR, RECORDINGS_DIR):
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, Text, Float, ForeignKey, Index, and_, or_, desc, func
+from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, Text, Float, ForeignKey, Index, and_, or_, desc, func, case
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import sessionmaker, Session, relationship, declarative_base
 from sqlalchemy.pool import QueuePool
@@ -1660,6 +1660,20 @@ EXTERNAL_STREAMS = [
     {"title":"TVO (YouTube Live)","category":"entertainment","subcategory":"youtube","country":"CA","language":"en","url":"https://www.youtube.com/watch?v=HyO06aGz6Nk","logo":"https://upload.wikimedia.org/wikipedia/commons/thumb/f/f9/TVO_logo.svg/200px-TVO_logo.svg.png","proxy_needed":False,"quality":"HD","stream_type":"youtube"},
     {"title":"RTS (YouTube Live)","category":"entertainment","subcategory":"youtube","country":"CH","language":"fr","url":"https://www.youtube.com/watch?v=9Eo9mI0L0-s","logo":"https://upload.wikimedia.org/wikipedia/commons/thumb/7/7f/RTS_logo_2019.svg/200px-RTS_logo_2019.svg.png","proxy_needed":False,"quality":"HD","stream_type":"youtube"},
     {"title":"RTBF (YouTube Live)","category":"entertainment","subcategory":"youtube","country":"BE","language":"fr","url":"https://www.youtube.com/watch?v=0cJtFpXXwMc","logo":"https://upload.wikimedia.org/wikipedia/commons/thumb/9/95/RTBF_2019_logo.svg/200px-RTBF_2019_logo.svg.png","proxy_needed":False,"quality":"HD","stream_type":"youtube"},
+]
+
+# ==================== CHAÎNES MISES EN AVANT ====================
+# Liste de mots-clés (titres de chaînes internationales/nationales connues,
+# déjà présentes dans les données ci-dessus) utilisée pour faire remonter des
+# chaînes reconnaissables dans le catalogue et les chaînes "à la une", plutôt
+# que de dépendre uniquement du compteur de vues (qui part à 0 pour tout le
+# monde sur un déploiement encore peu visité). Ce n'est PAS un chiffre de
+# popularité inventé — juste une priorité d'affichage.
+POPULAR_CHANNEL_KEYWORDS = [
+    "france 24", "bbc world", "bbc news", "bbc one",
+    "cnn international", "al jazeera english", "al jazeera arabic",
+    "euronews", "cgtn international", "cgtn news", "dw news", "dw english",
+    "bfm tv", "sky news", "rt news", "tf1", "france 2", "m6",
 ]
 
 # ==================== CATÉGORIES ====================
@@ -5569,7 +5583,12 @@ async def api_search(
     if type in ("all", "external"):
         ext_q = db.query(ExternalStream).filter(
             ExternalStream.is_active == True,
-            (ExternalStream.title.ilike(search_term) | ExternalStream.description.ilike(search_term))
+            (
+                ExternalStream.title.ilike(search_term)
+                | ExternalStream.subcategory.ilike(search_term)
+                | ExternalStream.category.ilike(search_term)
+                | ExternalStream.country.ilike(search_term)
+            )
         )
         if country:
             ext_q = ext_q.filter(ExternalStream.country.ilike(country))
@@ -6195,7 +6214,17 @@ async def get_catalog(
     q = db.query(ExternalStream).filter(ExternalStream.is_active == True)
     if category:
         q = q.filter(ExternalStream.category.ilike(f"%{category}%"))
-    streams = q.order_by(ExternalStream.id.desc()).limit(limit).all()
+    # Comme l'ancienne version : les chaînes les plus regardées d'abord
+    # (desc(ExternalStream.viewers)), pas les plus récemment ajoutées —
+    # sinon "En direct maintenant" ne montre que le dernier lot synchronisé
+    # plutôt que les chaînes populaires (France 24, BBC, etc.). En plus,
+    # priorité aux chaînes reconnaissables (POPULAR_CHANNEL_KEYWORDS) tant
+    # que le compteur de vues n'a pas eu le temps de se remplir, et parmi
+    # celles-ci, la vraie chaîne avant sa version YouTube en doublon.
+    popular = or_(*[ExternalStream.title.ilike(f"%{kw}%") for kw in POPULAR_CHANNEL_KEYWORDS])
+    priority = case((popular, 0), else_=1)
+    is_youtube = case((ExternalStream.stream_type == "youtube", 1), else_=0)
+    streams = q.order_by(priority, is_youtube, desc(ExternalStream.viewers), ExternalStream.id.desc()).limit(limit).all()
 
     return JSONResponse({
         "streams": [{
@@ -7509,12 +7538,17 @@ def _get_visitor_lang(request: Request, db: Session) -> str:
 # ── Routes API additionnelles ────────────────────────────────────────────
 @app.get("/api/channels/featured")
 async def get_featured_channels(limit: int = 12, db: Session = Depends(get_db)):
-    """Chaînes mises en avant (les plus récentes actives avec logo)"""
+    """Chaînes mises en avant : priorité aux chaînes reconnaissables
+    (POPULAR_CHANNEL_KEYWORDS, vraie chaîne avant sa version YouTube), puis
+    aux plus regardées — même logique que /api/catalog."""
+    popular = or_(*[ExternalStream.title.ilike(f"%{kw}%") for kw in POPULAR_CHANNEL_KEYWORDS])
+    priority = case((popular, 0), else_=1)
+    is_youtube = case((ExternalStream.stream_type == "youtube", 1), else_=0)
     channels = db.query(ExternalStream).filter(
         ExternalStream.is_active == True,
         ExternalStream.logo != None,
         ExternalStream.logo != "",
-    ).order_by(ExternalStream.id.desc()).limit(limit).all()
+    ).order_by(priority, is_youtube, desc(ExternalStream.viewers), ExternalStream.id.desc()).limit(limit).all()
     return JSONResponse({
         "channels": [{
             "id":          c.id,
