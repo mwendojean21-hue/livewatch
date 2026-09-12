@@ -20,6 +20,6 @@
     { "source": "/manifest.json", "destination": { "service": "backend" } },
     { "source": "/robots.txt", "destination": { "service": "backend" } },
     { "source": "/sitemap.xml", "destination": { "service": "backend" } },
-    { "source": "/(.*)", "destination": { "service": "frontend" } }
+    { "source": "/(.*)", "destination": { "service": "frontend", "path": "/index.html" } }
   ]
 }

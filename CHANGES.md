@@ -227,3 +227,53 @@ pour une bonne partie de ce que le backend expose déjà.
   bien là, juste jamais câblée côté frontend. Ajouté en haut de la page
   Événements, avec un style selon le type (info/avertissement/mise à
   jour/nouveauté).
+
+## Session 7 — vraie cause du 404 (sourcée), et de la lecture "qui ne montre rien"
+
+Cette fois j'ai vérifié sur la documentation Vercel réelle au lieu de deviner
+— les deux sessions précédentes sur le 404 tournaient en rond parce que je
+raisonnais sur un schéma que je n'avais jamais confirmé.
+
+- **404 au rafraîchissement — cause confirmée** : la configuration
+  `"services"` de `vercel.json` (Vercel Services, une fonctionnalité bien
+  réelle) ne lit qu'**un seul** `vercel.json`, à la racine — un
+  `vercel.json` niché dans `frontend/` (ajouté en Session 5) n'est tout
+  simplement jamais consulté pour le routage. C'est pour ça que ce fix n'a
+  rien changé. La doc Vercel confirme aussi qu'un rewrite vers un service
+  accepte un champ `path` pour forcer le chemin vu par ce service —
+  jusqu'ici notre règle générale renvoyait bien tout au service `frontend`,
+  mais sans lui dire de servir `index.html`, donc pour toute route sans
+  fichier réel correspondant (`/watch/external/...`, `/country/FR`, etc.),
+  le service cherchait un fichier qui n'existe pas et renvoyait un 404. Fix
+  définitif dans le seul `vercel.json` racine :
+  `{ "source": "/(.*)", "destination": { "service": "frontend", "path": "/index.html" } }`.
+  Supprimé `frontend/vercel.json` (mort, pour éviter la confusion). Gardé
+  `public/404.html` + la restauration dans `main.tsx` en filet de sécurité.
+- **Lecture des flux « qui ne montre rien » — cause confirmée** : ce n'était
+  ni le proxy ni le referer. `<video autoPlay>` **sans `muted`** — tous les
+  navigateurs bloquent silencieusement l'autoplay avec le son (aucune
+  erreur JS, rien dans les logs réseau, ce qui explique pourquoi les
+  requêtes `/proxy/stream` et `/proxy/segment` réussissaient très bien côté
+  serveur pendant que l'écran restait noir). Corrigé : lecture démarrée en
+  muet (`video.muted = true` + appel explicite à `.play()` après le
+  chargement du manifeste HLS, au lieu de compter uniquement sur l'attribut
+  `autoPlay`), son réactivable ensuite via les contrôles natifs.
+
+## En cours d'investigation — pourquoi seulement 82 pays sur ~203 configurés
+
+Pas encore corrigé, mais cause identifiée pendant cette session : la tâche
+de synchronisation IPTV (`sync_all_playlists`) boucle séquentiellement sur
+**726 playlists** (avec une pause de 0.5s entre chacune, donc 6+ minutes
+minimum même sans compter le temps réseau) et est lancée en tâche de fond
+« fire-and-forget » (`asyncio.create_task`) à l'intérieur d'une fonction
+serverless — qui a une limite de durée d'exécution stricte et qui, surtout,
+ne persiste aucune position de reprise. Résultat : à chaque déclenchement,
+la synchro repart de zéro, et seuls les pays en tout début de liste ont une
+vraie chance d'être traités avant que la fonction ne soit coupée — les ~120
+pays configurés mais jamais atteints n'apparaissent donc jamais dans
+`/api/iptv/countries`. Ce n'est pas (uniquement) un manque de chaînes
+publiques disponibles pour ces pays, c'est un job trop long pour
+l'environnement serverless, sans reprise. Un vrai correctif demande de
+rendre la synchro reprenable (mémoriser où elle s'est arrêtée, par lots,
+d'un déclenchement à l'autre) — je ne l'ai pas encore implémenté, à faire
+dans une prochaine session si tu veux que je m'y attaque.
