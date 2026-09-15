@@ -9,11 +9,32 @@ import { LiveBadge, DemoBanner, SectionHeading, Skeleton } from '@/components/ui
 import { StreamCard } from '@/components/StreamCard'
 
 export function WatchPage() {
-  const { streamId } = useParams<{ streamId: string }>()
+  // La route est /watch/:kind/:streamId (kind = "external" | "iptv" | "user"),
+  // ce qui correspond exactement aux `url` renvoyées par le backend
+  // (ex: "/watch/external/42", "/watch/iptv/9f1..."). C'est ce `kind` qui
+  // permet de savoir quelle table interroger côté backend pour la lecture.
+  const { kind: kindParam, streamId } = useParams<{ kind: string; streamId: string }>()
+  const kind = kindParam ?? 'external'
   const id = streamId ?? ''
 
+  // Métadonnées (titre, catégorie, vignette…) : le catalogue public ne liste
+  // aujourd'hui que les flux "external". Pour les autres types, on affiche un
+  // titre générique plutôt que de bloquer la lecture.
   const { data: all, loading } = useAsync(() => api.catalog(undefined, 100), [])
-  const stream = all?.find((s) => s.id === id) ?? all?.[0]
+  const stream = all?.find((s) => s.id === id)
+
+  // Résolution de l'URL de lecture réelle (jamais fournie par /api/catalog,
+  // qui ne renvoie qu'un lien de page /watch/... — voir /api/play côté backend).
+  const { data: playback, loading: playbackLoading, error: playbackError } = useAsync(
+    () => api.resolvePlayback(kind, id),
+    [kind, id],
+  )
+
+  // "Chaînes similaires" : l'ancien code a un vrai endpoint dédié pour ça
+  // (GET /api/streams/{id}/similar), plus fiable qu'un filtrage local sur les
+  // 100 premiers éléments du catalogue (qui ratait tout ce qui n'était pas
+  // dans cette première page, d'où la section vide observée).
+  const { data: similar } = useAsync(() => api.similarStreams(id), [id])
 
   const { data: comments } = useAsync(() => api.comments(id), [id])
   const [liked, setLiked] = useState(false)
@@ -30,22 +51,43 @@ export function WatchPage() {
     }
   }
 
-  if (loading) {
+  if (loading || playbackLoading) {
     return <div className="mx-auto max-w-5xl"><Skeleton className="aspect-video w-full" /></div>
   }
-  if (!stream) {
-    return <div className="mx-auto max-w-5xl card p-10 text-center text-ink-muted">Chaîne introuvable.</div>
+  if (playbackError || !playback) {
+    return (
+      <div className="mx-auto max-w-5xl card p-10 text-center text-ink-muted">
+        Impossible de lire cette chaîne{playbackError ? ` (${playbackError})` : ''}.
+      </div>
+    )
   }
 
-  const cat = getCategory(stream.category)
+  // stream vient du catalogue public (métadonnées) ; il n'existe que pour les
+  // flux "external". Pour les autres types (iptv, user), on retombe sur ce
+  // que /api/play a renvoyé (titre) plutôt que de bloquer l'affichage.
+  const cat = getCategory(stream?.category ?? 'iptv')
+  const title = stream?.title ?? playback.title ?? 'Chaîne en direct'
+
+  // /api/play renvoie soit une URL d'embed YouTube directement jouable, soit
+  // l'URL brute du flux — qu'il faut systématiquement faire passer par le
+  // proxy backend (CORS / referer souvent bloqués sur les flux IPTV bruts).
+  // Certaines sources (ex: France 24) exigent un Referer précis renvoyé par
+  // le backend (champ ExternalStream.referer) — on le repasse tel quel.
+  const extraHeaders = playback.headers ? `&headers=${encodeURIComponent(playback.headers)}` : ''
+  const playerSrc = playback.stream_type === 'youtube'
+    ? playback.url
+    : playback.stream_type === 'audio'
+      ? `/proxy/audio?url=${encodeURIComponent(playback.url)}${extraHeaders}`
+      : `/proxy/stream?url=${encodeURIComponent(playback.url)}${extraHeaders}`
 
   return (
     <div className="mx-auto max-w-5xl">
       <DemoBanner />
       <VideoPlayer
-        src={stream.stream_type === 'youtube' ? `https://www.youtube.com/embed/${stream.id}?autoplay=1` : `/proxy/stream?id=${stream.id}`}
-        type={stream.stream_type}
-        title={stream.title}
+        src={playerSrc}
+        directUrl={playback.stream_type === 'hls' ? playback.url : undefined}
+        type={playback.stream_type}
+        title={title}
       />
 
       <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -54,10 +96,12 @@ export function WatchPage() {
             <LiveBadge />
             <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${cat.chip} ${cat.ink}`}>{cat.name}</span>
           </div>
-          <h1 className="font-display text-xl font-semibold sm:text-2xl">{stream.title}</h1>
-          <p className="mt-1 flex items-center gap-1.5 text-sm text-ink-muted">
-            <Eye size={14} /> {(stream.viewers ?? 0).toLocaleString('fr-FR')} spectateurs · {stream.country}
-          </p>
+          <h1 className="font-display text-xl font-semibold sm:text-2xl">{title}</h1>
+          {stream && (
+            <p className="mt-1 flex items-center gap-1.5 text-sm text-ink-muted">
+              <Eye size={14} /> {(stream.viewers ?? 0).toLocaleString('fr-FR')} spectateurs · {stream.country}
+            </p>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -116,9 +160,16 @@ export function WatchPage() {
         <div>
           <SectionHeading title="Chaînes similaires" />
           <div className="grid gap-3">
-            {all?.filter((s) => s.id !== id && s.category === stream.category).slice(0, 4).map((s) => (
-              <StreamCard key={s.id} stream={s} />
-            ))}
+            {similar && similar.length > 0
+              ? similar.map((s) => (
+                  <StreamCard
+                    key={s.id}
+                    stream={{ ...s, quality: '', logo: s.logo || '' }}
+                  />
+                ))
+              : similar && (
+                  <p className="text-sm text-ink-muted">Aucune chaîne similaire pour l'instant.</p>
+                )}
           </div>
         </div>
       </div>

@@ -35,6 +35,16 @@ export function CategoryDonut({ data }: { data: { category: string; count: numbe
 }
 
 export function ViewersTrendChart({ data }: { data: { label: string; viewers: number }[] }) {
+  if (data.length === 0) {
+    return (
+      <div className="flex h-56 w-full flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed border-border text-center">
+        <p className="text-sm font-medium text-ink-muted">Pas encore d'historique de spectateurs</p>
+        <p className="px-6 text-xs text-ink-muted/70">
+          Ce graphique se remplira au fil des jours — aucune donnée n'est encore enregistrée sur cette période.
+        </p>
+      </div>
+    )
+  }
   return (
     <div className="h-56 w-full">
       <ResponsiveContainer>

@@ -9,6 +9,7 @@ Propriétaire: défini via les variables d'environnement ADMIN_* (voir .env)
 import os
 import sys
 import uuid
+import time
 import hashlib
 import json
 import random
@@ -98,7 +99,7 @@ for _d in (TEMPLATES_DIR, UPLOADS_DIR, THUMBNAILS_DIR, RECORDINGS_DIR):
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, Text, Float, ForeignKey, Index, and_, or_, desc, func
+from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, Text, Float, ForeignKey, Index, and_, or_, desc, func, case
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import sessionmaker, Session, relationship, declarative_base
 from sqlalchemy.pool import QueuePool
@@ -178,6 +179,13 @@ class Settings:
     )
     ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
     OWNER_ID = ADMIN_EMAIL
+
+    # Secret partagé avec Vercel Cron (en-tête "Authorization: Bearer <valeur>"
+    # envoyé automatiquement par Vercel sur les requêtes cron quand la variable
+    # d'environnement CRON_SECRET est définie côté projet). Optionnel : si non
+    # défini, l'endpoint de cron reste accessible sans vérification — à définir
+    # en production pour éviter que n'importe qui puisse déclencher la sync.
+    CRON_SECRET = os.getenv("CRON_SECRET", "")
 
 
 
@@ -1662,6 +1670,20 @@ EXTERNAL_STREAMS = [
     {"title":"RTBF (YouTube Live)","category":"entertainment","subcategory":"youtube","country":"BE","language":"fr","url":"https://www.youtube.com/watch?v=0cJtFpXXwMc","logo":"https://upload.wikimedia.org/wikipedia/commons/thumb/9/95/RTBF_2019_logo.svg/200px-RTBF_2019_logo.svg.png","proxy_needed":False,"quality":"HD","stream_type":"youtube"},
 ]
 
+# ==================== CHAÎNES MISES EN AVANT ====================
+# Liste de mots-clés (titres de chaînes internationales/nationales connues,
+# déjà présentes dans les données ci-dessus) utilisée pour faire remonter des
+# chaînes reconnaissables dans le catalogue et les chaînes "à la une", plutôt
+# que de dépendre uniquement du compteur de vues (qui part à 0 pour tout le
+# monde sur un déploiement encore peu visité). Ce n'est PAS un chiffre de
+# popularité inventé — juste une priorité d'affichage.
+POPULAR_CHANNEL_KEYWORDS = [
+    "france 24", "bbc world", "bbc news", "bbc one",
+    "cnn international", "al jazeera english", "al jazeera arabic",
+    "euronews", "cgtn international", "cgtn news", "dw news", "dw english",
+    "bfm tv", "sky news", "rt news", "tf1", "france 2", "m6",
+]
+
 # ==================== CATÉGORIES ====================
 
 CATEGORIES = [
@@ -2228,6 +2250,105 @@ class IPTVSyncService:
                 logger.error(f"Erreur dans le sync périodique: {e}")
             await asyncio.sleep(settings.IPTV_SYNC_INTERVAL)
 
+    async def sync_next_batch(self, db: Session, time_budget_seconds: float = 25.0, max_playlists: int = 40) -> dict:
+        """Synchronise un LOT de playlists, borné en temps — pensé pour tourner
+        dans une seule invocation serverless (Vercel Cron) plutôt qu'en tâche
+        de fond illimitée (`sync_all_playlists`/`start_periodic_sync`, qui ne
+        peuvent pas survivre à la fin d'une requête sur un déploiement
+        serverless : la fonction est gelée dès la réponse envoyée, donc la
+        synchro s'interrompait toujours à peu près au même endroit et
+        repartait de zéro à chaque déclenchement — d'où le grand nombre de
+        pays configurés mais jamais réellement synchronisés).
+
+        Stratégie : traiter en priorité les playlists jamais synchronisées ou
+        synchronisées il y a le plus longtemps (ORDER BY last_sync ASC NULLS
+        FIRST). Comme cette méthode est appelée à intervalles réguliers
+        (cron), chaque appel avance un peu plus loin dans la liste — au bout
+        de plusieurs déclenchements, TOUTES les playlists finissent par être
+        couvertes, y compris celles qui échouaient jusqu'ici faute de temps.
+        """
+        started = time.monotonic()
+        stats = {"attempted": 0, "succeeded": 0, "empty": 0, "failed": 0, "total_channels": 0}
+
+        # 1) S'assurer que chaque entrée de IPTV_PLAYLISTS a bien une ligne en
+        #    base (opération locale, rapide, sans appel réseau) avant de
+        #    choisir le lot à traiter.
+        existing_names = {n for (n,) in db.query(IPTVPlaylist.name).all()}
+        for pl_data in IPTV_PLAYLISTS:
+            if pl_data["name"] not in existing_names:
+                db.add(IPTVPlaylist(**pl_data))
+        db.commit()
+
+        # 2) Sélectionner le lot : les moins récemment synchronisées d'abord.
+        batch = (
+            db.query(IPTVPlaylist)
+            .filter(IPTVPlaylist.is_active == True)
+            .order_by(IPTVPlaylist.last_sync.asc().nullsfirst())
+            .limit(max_playlists)
+            .all()
+        )
+        by_name = {p["name"]: p for p in IPTV_PLAYLISTS}
+
+        for db_pl in batch:
+            if time.monotonic() - started > time_budget_seconds:
+                break  # le prochain déclenchement reprendra où on s'est arrêté
+
+            pl_data = by_name.get(db_pl.name)
+            if not pl_data:
+                continue  # playlist retirée de la config depuis
+
+            stats["attempted"] += 1
+            try:
+                channels = await self.fetch_playlist(pl_data["name"], pl_data["url"])
+
+                # Petite tentative de ré-essai sur conflit transactionnel
+                # CockroachDB (SerializationFailure/WriteTooOldError, très
+                # fréquent ici sur des DELETE+INSERT concurrents), plutôt que
+                # d'abandonner tout de suite cette playlist pour ce cycle.
+                for attempt in range(2):
+                    try:
+                        if channels:
+                            db.query(IPTVChannel).filter(IPTVChannel.playlist_id == pl_data["name"]).delete()
+                            for ch in channels:
+                                db.add(IPTVChannel(**ch))
+                            db_pl.channel_count = len(channels)
+                            db_pl.sync_status = "success"
+                            db_pl.sync_error = None
+                            stats["total_channels"] += len(channels)
+                            stats["succeeded"] += 1
+                        else:
+                            db_pl.sync_status = "empty"
+                            db_pl.sync_error = "Aucune chaîne trouvée ou playlist introuvable"
+                            stats["empty"] += 1
+                        db_pl.last_sync = datetime.utcnow()
+                        db.commit()
+                        break
+                    except Exception as db_err:
+                        db.rollback()
+                        if attempt == 0:
+                            await asyncio.sleep(0.3)
+                            continue
+                        raise db_err
+
+            except Exception as pl_err:
+                logger.error(f"Erreur playlist {pl_data.get('name','?')}: {pl_err}")
+                try:
+                    db_pl.sync_status = "error"
+                    db_pl.sync_error = str(pl_err)[:500]
+                    db_pl.last_sync = datetime.utcnow()  # évite de re-tenter en boucle immédiatement une playlist cassée
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                stats["failed"] += 1
+
+        stats["elapsed_seconds"] = round(time.monotonic() - started, 1)
+        stats["remaining_this_cycle"] = (
+            db.query(IPTVPlaylist)
+            .filter(IPTVPlaylist.is_active == True, IPTVPlaylist.last_sync.is_(None))
+            .count()
+        )
+        return stats
+
     async def close(self):
         if self.session:
             await self.session.close()
@@ -2290,14 +2411,24 @@ class HLSProxy:
             "Cache-Control": "no-cache, no-store",
         }
 
-    def _rewrite_m3u8(self, content: str, base_url: str) -> str:
+    def _rewrite_m3u8(self, content: str, base_url: str, extra_headers: dict = None) -> str:
         """
         Réécrit un manifest M3U8 pour router tous les segments et sous-playlists
         via notre proxy. Gère :
         - URLs de segments (lignes sans #)
         - URI= dans les tags EXT-X-KEY, EXT-X-MAP, EXT-X-MEDIA
         - URLs relatives, absolues, avec query strings
+
+        `extra_headers` (ex: un Referer personnalisé pour une chaîne donnée,
+        voir ExternalStream.referer) est propagé dans l'URL de chaque segment
+        et sous-manifeste — avant ce correctif, seule la requête sur le
+        manifeste initial recevait ce header ; les segments qu'il référence
+        repartaient avec le Referer par défaut (dérivé de leur propre
+        origine), ce qui pouvait suffire quand ils sont sur le même domaine
+        mais pas quand la source sert ses segments depuis un autre domaine/CDN.
         """
+        headers_qs = f"&headers={quote(json.dumps(extra_headers), safe='')}" if extra_headers else ""
+
         try:
             parsed_base = urlparse(base_url)
             base_dir = base_url.rsplit("/", 1)[0] + "/"
@@ -2318,11 +2449,11 @@ class HLSProxy:
 
         def proxy_url_seg(raw: str) -> str:
             abs_url = to_absolute(raw)
-            return f"/proxy/segment?url={quote(abs_url, safe='')}"
+            return f"/proxy/segment?url={quote(abs_url, safe='')}{headers_qs}"
 
         def proxy_url_manifest(raw: str) -> str:
             abs_url = to_absolute(raw)
-            return f"/proxy/stream?url={quote(abs_url, safe='')}"
+            return f"/proxy/stream?url={quote(abs_url, safe='')}{headers_qs}"
 
         def rewrite_uri_attr(m):
             uri = m.group(1)
@@ -2386,7 +2517,7 @@ class HLSProxy:
                     )
 
                     if is_m3u8:
-                        rewritten = self._rewrite_m3u8(raw_text, url)
+                        rewritten = self._rewrite_m3u8(raw_text, url, extra_headers)
                         content_bytes = rewritten.encode("utf-8")
                         media_type = "application/vnd.apple.mpegurl"
                     else:
@@ -2409,10 +2540,20 @@ class HLSProxy:
 
             except httpx.HTTPStatusError as e:
                 last_err = e
-                if e.response.status_code in (403, 401):
-                    # Essayer prochain UA
+                status = e.response.status_code
+                if status in (401, 403, 400):
+                    # 400 peut aussi venir d'un User-Agent/entête rejeté par
+                    # la source (observé en pratique sur France 24 par ex.),
+                    # pas seulement 401/403 — sans ce cas, une seule requête
+                    # échouée abandonnait tout de suite sans jamais tester
+                    # les autres User-Agents de la rotation.
                     continue
-                raise HTTPException(status_code=e.response.status_code, detail=f"Source HTTP {e.response.status_code}")
+                if status == 429:
+                    # Limite de débit : une nouvelle identité n'aide pas ici,
+                    # il faut ralentir avant de réessayer.
+                    await asyncio.sleep(1.5)
+                    continue
+                raise HTTPException(status_code=status, detail=f"Source HTTP {status}")
             except httpx.TimeoutException:
                 last_err = Exception("Timeout")
                 continue
@@ -2422,8 +2563,19 @@ class HLSProxy:
 
         raise HTTPException(status_code=502, detail=f"Proxy inaccessible: {last_err}")
 
-    async def stream_segment(self, url: str) -> StreamingResponse:
-        """Stream un segment .ts / .m4s / audio en vrai streaming progressif."""
+    async def stream_segment(self, url: str, extra_headers: dict = None) -> StreamingResponse:
+        """Stream un segment .ts / .m4s / audio en vrai streaming progressif.
+
+        Corrigé : l'ancienne version créait le générateur de streaming AVANT
+        de savoir si la requête amont réussirait — une erreur HTTP (400,
+        401, 403, 429…) sur le segment n'était donc jamais détectée ici. Le
+        générateur se contentait de s'arrêter silencieusement
+        (`if resp.status_code >= 400: return`), renvoyant une réponse 200
+        VIDE au lecteur plutôt qu'une vraie erreur ou une nouvelle tentative
+        avec un autre User-Agent — un des cas les plus difficiles à
+        diagnostiquer (aucune trace d'erreur, juste un segment manquant qui
+        fait décrocher la lecture). On établit maintenant la connexion et on
+        vérifie le statut AVANT de renvoyer le flux."""
         origin = self._get_origin(url)
 
         # Détecter le Content-Type depuis l'extension (pas de HEAD = plus rapide)
@@ -2443,31 +2595,46 @@ class HLSProxy:
 
         last_err = None
         for ua_idx in range(len(self._USER_AGENTS)):
+            client = self._make_client(origin, ua_idx)
             try:
-                client = self._make_client(origin, ua_idx)
-
-                async def _gen(c=client, u=url):
-                    try:
-                        async with c:
-                            async with c.stream("GET", u) as resp:
-                                if resp.status_code >= 400:
-                                    return
-                                async for chunk in resp.aiter_bytes(65536):
-                                    yield chunk
-                    except Exception:
-                        return
-
-                return StreamingResponse(
-                    _gen(),
-                    media_type=ct,
-                    headers=self._build_cors_headers(),
-                )
-
+                req_headers = dict(extra_headers) if extra_headers else {}
+                req = client.build_request("GET", url, headers=req_headers)
+                resp = await client.send(req, stream=True)
             except Exception as e:
                 last_err = e
+                await client.aclose()
                 continue
 
-        raise HTTPException(status_code=502, detail=f"Segment inaccessible: {last_err}")
+            if resp.status_code in (400, 401, 403):
+                # Peut être un User-Agent/entête rejeté par la source :
+                # on essaie le prochain plutôt que d'abandonner ce segment.
+                await resp.aclose(); await client.aclose()
+                last_err = Exception(f"HTTP {resp.status_code}")
+                continue
+            if resp.status_code == 429:
+                await resp.aclose(); await client.aclose()
+                last_err = Exception("429 Too Many Requests")
+                await asyncio.sleep(1.0)
+                continue
+            if resp.status_code >= 400:
+                await resp.aclose(); await client.aclose()
+                raise HTTPException(status_code=resp.status_code, detail=f"Segment HTTP {resp.status_code}")
+
+            async def _gen(c=client, r=resp):
+                try:
+                    async for chunk in r.aiter_bytes(65536):
+                        yield chunk
+                finally:
+                    await r.aclose()
+                    await c.aclose()
+
+            return StreamingResponse(
+                _gen(),
+                media_type=ct,
+                headers=self._build_cors_headers(),
+            )
+
+        raise HTTPException(status_code=502, detail=f"Segment inaccessible : {last_err}")
 
 proxy = HLSProxy()
 
@@ -4055,9 +4222,15 @@ async def proxy_stream_options():
     )
 
 @app.get("/proxy/segment")
-async def proxy_segment_route(url: str):
+async def proxy_segment_route(url: str, headers: str = None):
     """Proxy segments .ts / .m4s / audio — streaming progressif réel"""
-    return await proxy.stream_segment(url)
+    custom_headers = None
+    if headers:
+        try:
+            custom_headers = json.loads(headers)
+        except Exception:
+            pass
+    return await proxy.stream_segment(url, custom_headers)
 
 @app.options("/proxy/segment")
 async def proxy_segment_options():
@@ -4071,7 +4244,7 @@ async def proxy_segment_options():
     )
 
 @app.get("/proxy/audio")
-async def proxy_audio_route(url: str):
+async def proxy_audio_route(url: str, headers: str = None):
     """
     Proxy dédié pour les flux audio (MP3, AAC, OGG…).
     Supporte le streaming progressif avec gestion des Range requests.
@@ -4087,6 +4260,11 @@ async def proxy_audio_route(url: str):
             "Referer": origin + "/",
             "Connection": "keep-alive",
         }
+        if headers:
+            try:
+                req_headers.update(json.loads(headers))
+            except Exception:
+                pass
 
         async def audio_stream_generator(stream_url: str, hdrs: dict):
             async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
@@ -4266,13 +4444,17 @@ async def upload_thumbnail(request: Request, file: UploadFile = File(...)):
 # ==================== API IPTV ====================
 
 @app.post("/api/admin/iptv/sync")
-async def admin_sync_iptv(request: Request):
+async def admin_sync_iptv(request: Request, db: Session = Depends(get_db)):
+    """Déclenchement manuel depuis l'admin : traite un lot borné en temps
+    (comme le cron, voir /api/cron/sync-iptv) et attend le résultat avant de
+    répondre, au lieu de lancer une tâche de fond qui mourrait de toute façon
+    dès la fin de la requête sur un déploiement serverless. Un clic ne
+    synchronise donc qu'un lot ; le cron continue en arrière-plan, et
+    recliquer plus tard avance encore le curseur."""
     try: require_admin(request)
     except HTTPException: return JSONResponse(status_code=401, content={"success": False, "error": "Non autorisé"})
-    if iptv_sync.is_syncing:
-        return JSONResponse({"success": False, "message": "Synchronisation déjà en cours", "is_syncing": True})
-    asyncio.create_task(iptv_sync.sync_all_playlists())
-    return JSONResponse({"success": True, "message": "Synchronisation démarrée", "is_syncing": True})
+    stats = await iptv_sync.sync_next_batch(db, time_budget_seconds=8.0, max_playlists=40)
+    return JSONResponse({"success": True, "message": "Lot synchronisé", **stats})
 
 @app.get("/api/iptv/stats")
 async def iptv_stats(db: Session = Depends(get_db)):
@@ -4280,6 +4462,7 @@ async def iptv_stats(db: Session = Depends(get_db)):
     total_channels = db.query(IPTVChannel).count()
     active_channels = db.query(IPTVChannel).filter(IPTVChannel.is_active == True).count()
     total_playlists = db.query(IPTVPlaylist).count()
+    synced_playlists = db.query(IPTVPlaylist).filter(IPTVPlaylist.last_sync.isnot(None)).count()
 
     last_sync = db.query(IPTVPlaylist.last_sync).order_by(desc(IPTVPlaylist.last_sync)).first()
 
@@ -4293,6 +4476,7 @@ async def iptv_stats(db: Session = Depends(get_db)):
         "total_channels": total_channels,
         "active_channels": active_channels,
         "total_playlists": total_playlists,
+        "synced_playlists": synced_playlists,
         "last_sync": last_sync[0].isoformat() if last_sync and last_sync[0] else None,
         "top_categories": [{"category": c[0], "count": c[1]} for c in categories],
         "is_syncing": iptv_sync.is_syncing
@@ -4636,11 +4820,20 @@ async def admin_unblock_stream(stream_id: str, request: Request, db: Session = D
 async def admin_delete_comment(comment_id: str, request: Request, db: Session = Depends(get_db)):
     try: require_admin(request)
     except HTTPException: return JSONResponse(status_code=401, content={"success": False, "error": "Non autorisé"})
+    # NB: /api/admin/comments/recent liste des ChatMessage, mais /api/streams/{id}/comments
+    # utilise le modèle Comment — deux tables séparées pour des espaces d'ID différents.
+    # On tente les deux pour que le bouton "supprimer" marche quelle que soit l'origine.
     comment = db.query(Comment).filter(Comment.id == comment_id).first()
     if comment:
         comment.is_deleted = True
         db.commit()
-    return JSONResponse({"success": True})
+        return JSONResponse({"success": True})
+    chat_msg = db.query(ChatMessage).filter(ChatMessage.id == comment_id).first()
+    if chat_msg:
+        chat_msg.is_deleted = True
+        db.commit()
+        return JSONResponse({"success": True})
+    return JSONResponse({"success": False, "error": "Commentaire introuvable"})
 
 @app.post("/api/admin/ips/block")
 async def admin_block_ip(
@@ -4706,13 +4899,63 @@ async def admin_toggle_external(stream_id: str, request: Request, db: Session = 
 
 @app.post("/api/admin/iptv/playlist/{playlist_name}/refresh")
 async def admin_refresh_playlist(playlist_name: str, request: Request, db: Session = Depends(get_db)):
+    """Rafraîchit UNE seule playlist, pas tout le catalogue (l'ancien code
+    appelait par erreur sync_all_playlists() ici — chaque clic relançait
+    une synchro complète de 726 playlists en tâche de fond vouée à mourir
+    dès la fin de la requête, sans jamais réellement traiter celle demandée
+    en priorité)."""
     try: require_admin(request)
     except HTTPException: return JSONResponse(status_code=401, content={"success": False, "error": "Non autorisé"})
     playlist = db.query(IPTVPlaylist).filter(IPTVPlaylist.name == playlist_name).first()
     if not playlist:
         return JSONResponse(status_code=404, content={"error": "Playlist non trouvée"})
-    asyncio.create_task(iptv_sync.sync_all_playlists())
-    return JSONResponse({"success": True, "message": "Synchronisation lancée"})
+
+    pl_data = next((p for p in IPTV_PLAYLISTS if p["name"] == playlist_name), None)
+    if not pl_data:
+        return JSONResponse(status_code=404, content={"error": "Playlist retirée de la configuration"})
+
+    try:
+        channels = await iptv_sync.fetch_playlist(pl_data["name"], pl_data["url"])
+        if channels:
+            db.query(IPTVChannel).filter(IPTVChannel.playlist_id == playlist_name).delete()
+            for ch in channels:
+                db.add(IPTVChannel(**ch))
+            playlist.channel_count = len(channels)
+            playlist.sync_status = "success"
+            playlist.sync_error = None
+        else:
+            playlist.sync_status = "empty"
+            playlist.sync_error = "Aucune chaîne trouvée ou playlist introuvable"
+        playlist.last_sync = datetime.utcnow()
+        db.commit()
+        return JSONResponse({"success": True, "message": f"« {playlist.display_name} » synchronisée", "channel_count": playlist.channel_count})
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)[:300]})
+
+@app.get("/api/cron/sync-iptv")
+async def cron_sync_iptv(request: Request, db: Session = Depends(get_db)):
+    """Point d'entrée pour Vercel Cron — remplace l'ancien modèle
+    "tâche de fond illimitée" (sync_all_playlists via asyncio.create_task /
+    start_periodic_sync) qui ne peut pas fonctionner en serverless : la
+    fonction est gelée dès que la réponse HTTP est envoyée, donc une tâche
+    de fond qui n'a pas fini à ce moment-là est simplement interrompue, sans
+    jamais reprendre où elle en était. Ici, chaque appel traite un lot borné
+    en temps et attend le résultat avant de répondre — configurer un cron
+    Vercel (voir vercel.json) pour rappeler cet endpoint toutes les 5-10
+    minutes fait progresser la synchro lot par lot jusqu'à couvrir tous les
+    pays configurés, au lieu de toujours s'arrêter aux mêmes 80 premiers.
+
+    Protégé par CRON_SECRET si défini (Vercel envoie automatiquement
+    "Authorization: Bearer <CRON_SECRET>" sur les requêtes cron)."""
+    if settings.CRON_SECRET:
+        auth = request.headers.get("authorization", "")
+        if auth != f"Bearer {settings.CRON_SECRET}":
+            raise HTTPException(status_code=401, detail="Non autorisé")
+
+    stats = await iptv_sync.sync_next_batch(db, time_budget_seconds=8.0, max_playlists=60)
+    logger.info(f"[cron] Lot IPTV synchronisé : {stats}")
+    return JSONResponse({"success": True, **stats})
 
 @app.get("/health")
 async def health_check(db: Session = Depends(get_db)):
@@ -5392,15 +5635,24 @@ async def ping():
 @app.get("/api/stats/public")
 async def public_stats(db: Session = Depends(get_db)):
     """Statistiques publiques de la plateforme"""
+    from sqlalchemy import func
     live_streams  = db.query(LiveStream).filter(LiveStream.is_live == True, LiveStream.is_blocked == False).count()
     total_streams = db.query(LiveStream).filter(LiveStream.is_blocked == False).count()
     total_ch      = db.query(IPTVChannel).count()
     total_ext     = db.query(ExternalStream).filter(ExternalStream.is_active == True).count()
+    ext_viewers   = db.query(func.coalesce(func.sum(ExternalStream.viewers), 0)).filter(ExternalStream.is_active == True).scalar() or 0
+    live_viewers  = db.query(func.coalesce(func.sum(LiveStream.viewer_count), 0)).filter(LiveStream.is_live == True).scalar() or 0
     return JSONResponse({
+        # Champs historiques (consommés par les templates Jinja restants)
         "live_streams":    live_streams,
         "total_streams":   total_streams,
         "iptv_channels":   total_ch,
         "external_streams": total_ext,
+        # Champs consommés par le frontend React (src/types/api.ts PublicStats)
+        "live_now":              live_streams,
+        "total_viewers":         int(ext_viewers) + int(live_viewers),
+        "total_channels":        total_ch + total_ext,
+        "total_streams_today":   total_streams,
     })
 
 
@@ -5415,6 +5667,96 @@ async def get_viewer_count(stream_id: int, db: Session = Depends(get_db)):
 
 
 # ── Route like ────────────────────────────────────────────────────────────
+
+
+# Referer par défaut pour des hébergeurs connus pour exiger un Referer précis
+# et renvoyer 400/403 sans lui (ex: France 24 — observé en production,
+# `/proxy/stream` échouait par intermittence sur static.france24.com malgré
+# le fetch initial réussi). N'est utilisé QUE si l'admin n'a pas déjà défini
+# un referer personnalisé pour ce flux (voir ExternalStream.referer) — cette
+# table est un filet de sécurité, pas un remplacement du champ admin.
+KNOWN_REFERER_DEFAULTS = {
+    "france24.com": "https://www.france24.com/",
+}
+
+def _default_referer_for(url: str) -> str | None:
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return None
+    for domain, ref in KNOWN_REFERER_DEFAULTS.items():
+        if host == domain or host.endswith("." + domain):
+            return ref
+    return None
+
+
+# ── Résolution de lecture unifiée (JSON, pour le frontend React) ──────────
+# Les pages /watch/external/{id} et /watch/iptv/{id} font ce même travail
+# mais renvoient du HTML (Jinja). Le frontend a besoin d'un équivalent JSON
+# pour construire l'URL du lecteur (VideoPlayer / proxy).
+@app.get("/api/play/{kind}/{stream_id}")
+async def resolve_playback(kind: str, stream_id: str, db: Session = Depends(get_db)):
+    """Retourne {stream_type, url, title, ...} prêt à consommer par le lecteur.
+
+    - kind == "external" | "iptv" | "user"
+    - Pour stream_type == "youtube", `url` est déjà une URL d'embed jouable.
+    - Sinon, `url` est l'URL brute du flux : le frontend doit la faire passer
+      par /proxy/stream (vidéo) ou /proxy/audio (audio) — jamais l'utiliser
+      directement (CORS / hotlink protection sur la plupart des flux IPTV).
+    """
+    kind = kind.lower()
+    referer = None
+
+    if kind == "external":
+        obj = db.query(ExternalStream).filter(ExternalStream.id == stream_id).first()
+        if not obj:
+            raise HTTPException(status_code=404, detail="Flux introuvable")
+        obj.viewers = (obj.viewers or 0) + 1
+        db.commit()
+        raw_url, stream_type, title = obj.url, obj.stream_type, obj.title
+        referer = obj.referer or _default_referer_for(raw_url)
+    elif kind == "iptv":
+        obj = db.query(IPTVChannel).filter(IPTVChannel.id == stream_id).first()
+        if not obj:
+            raise HTTPException(status_code=404, detail="Chaîne introuvable")
+        obj.viewers   = (obj.viewers or 0) + 1
+        obj.last_seen = datetime.utcnow()
+        db.commit()
+        raw_url, stream_type, title = obj.url, (obj.stream_type or "hls"), obj.name
+        referer = _default_referer_for(raw_url)
+    elif kind == "user":
+        obj = db.query(UserStream).filter(UserStream.id == stream_id).first()
+        if not obj:
+            raise HTTPException(status_code=404, detail="Stream introuvable")
+        raw_url, stream_type, title = (obj.stream_url or ""), "hls", obj.title
+        referer = _default_referer_for(raw_url)
+    else:
+        raise HTTPException(status_code=400, detail="type de flux inconnu")
+
+    if not raw_url or not raw_url.strip():
+        raise HTTPException(status_code=422, detail="URL de ce flux manquante ou invalide")
+
+    if stream_type == "youtube":
+        yt = await yt_service.get_stream_url(raw_url)
+        if yt.get("error"):
+            raise HTTPException(status_code=422, detail=yt["error"])
+        return JSONResponse({
+            "stream_type": "youtube",
+            "url":         yt.get("embed_url") or yt.get("hls_url") or yt.get("url"),
+            "title":       title,
+            "youtube":     yt,
+        })
+
+    return JSONResponse({
+        "stream_type": stream_type,
+        "url":         raw_url,
+        "title":       title,
+        # Referer personnalisé pour cette chaîne (champ ExternalStream.referer,
+        # jusqu'ici jamais lu nulle part — certaines sources comme France 24
+        # exigent un Referer précis et renvoient 400/403 sans lui). Le
+        # frontend le repasse à /proxy/stream via son paramètre `headers`.
+        "headers":     json.dumps({"Referer": referer}) if referer else None,
+    })
 
 
 # ── Route YouTube URL extraction ──────────────────────────────────────────
@@ -5491,7 +5833,12 @@ async def api_search(
     if type in ("all", "external"):
         ext_q = db.query(ExternalStream).filter(
             ExternalStream.is_active == True,
-            (ExternalStream.title.ilike(search_term) | ExternalStream.description.ilike(search_term))
+            (
+                ExternalStream.title.ilike(search_term)
+                | ExternalStream.subcategory.ilike(search_term)
+                | ExternalStream.category.ilike(search_term)
+                | ExternalStream.country.ilike(search_term)
+            )
         )
         if country:
             ext_q = ext_q.filter(ExternalStream.country.ilike(country))
@@ -5559,8 +5906,8 @@ async def admin_dashboard_summary(request: Request, db: Session = Depends(get_db
     total_iptv_ch      = db.query(IPTVChannel).count()
     total_iptv_pl      = db.query(IPTVPlaylist).count()
     total_visitors     = db.query(Visitor).count()
-    new_visitors_24h   = db.query(Visitor).filter(Visitor.first_seen >= last_24h).count()
-    new_visitors_7d    = db.query(Visitor).filter(Visitor.first_seen >= last_7d).count()
+    new_visitors_24h   = db.query(Visitor).filter(Visitor.created_at >= last_24h).count()
+    new_visitors_7d    = db.query(Visitor).filter(Visitor.created_at >= last_7d).count()
     total_comments     = db.query(ChatMessage).count()
     new_comments_24h   = db.query(ChatMessage).filter(ChatMessage.created_at >= last_24h).count()
     total_reports      = db.query(Report).count()
@@ -5570,6 +5917,13 @@ async def admin_dashboard_summary(request: Request, db: Session = Depends(get_db
     total_feedback     = db.query(UserFeedback).count()
     active_ann         = db.query(AdminAnnouncement).filter(AdminAnnouncement.is_active == True).count()
     tracked_locations  = db.query(UserLocation).count()
+
+    from sqlalchemy import func
+    ext_viewers  = db.query(func.coalesce(func.sum(ExternalStream.viewers), 0)).filter(ExternalStream.is_active == True).scalar() or 0
+    live_viewers = db.query(func.coalesce(func.sum(LiveStream.viewer_count), 0)).filter(LiveStream.is_live == True).scalar() or 0
+    category_rows = db.query(
+        ExternalStream.category, func.count(ExternalStream.id)
+    ).filter(ExternalStream.is_active == True).group_by(ExternalStream.category).all()
 
     return JSONResponse({
         "streams": {
@@ -5589,7 +5943,109 @@ async def admin_dashboard_summary(request: Request, db: Session = Depends(get_db
         },
         "feedback":     { "total": total_feedback, "unread": unread_feedback },
         "announcements": { "active": active_ann },
+        # Champs à plat consommés par le frontend React (src/types/api.ts AdminSummary)
+        "live_now":       live_streams,
+        "total_viewers":  int(ext_viewers) + int(live_viewers),
+        "total_channels": total_iptv_ch + total_external,
+        "new_reports":    pending_reports,
+        "category_breakdown": [{"category": c or "autre", "count": n} for c, n in category_rows],
+        # Il n'existe pas de table de séries temporelles pour les vues par
+        # flux, mais Visitor.last_seen donne un vrai proxy honnête du trafic
+        # quotidien (nombre de visiteurs distincts actifs chaque jour) plutôt
+        # que de laisser ce graphique vide en permanence.
+        "viewers_trend": [
+            {
+                "label": (now - timedelta(days=i)).strftime("%a")[:3],
+                "viewers": db.query(Visitor).filter(
+                    Visitor.last_seen >= (now - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0),
+                    Visitor.last_seen <  (now - timedelta(days=i-1)).replace(hour=0, minute=0, second=0, microsecond=0),
+                ).count(),
+            }
+            for i in range(6, -1, -1)
+        ],
     })
+
+
+# ── Listes JSON pour l'interface d'admin React ────────────────────────────
+# L'ancienne interface (Jinja) chargeait tout ça dans un seul rendu serveur
+# de /admin/dashboard. Le nouveau frontend a besoin de ces mêmes données en
+# JSON — elles n'existaient auparavant que sous forme de fragments HTML.
+@app.get("/api/admin/reports")
+async def admin_list_reports(request: Request, db: Session = Depends(get_db)):
+    """Liste des signalements non résolus, pour la modération."""
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error": "Non autorisé"})
+    reports = db.query(Report).filter(Report.resolved == False).order_by(desc(Report.created_at)).limit(200).all()
+    return JSONResponse({
+        "reports": [{
+            "id":          r.id,
+            "reason":      r.reason,
+            "comment_id":  r.comment_id,
+            "stream_id":   r.stream_id,
+            "stream_type": r.stream_type,
+            "created_at":  r.created_at.isoformat() if r.created_at else None,
+        } for r in reports]
+    })
+
+
+@app.get("/api/admin/external/list")
+async def admin_list_external(request: Request, db: Session = Depends(get_db)):
+    """Liste des flux externes, pour le CRUD admin."""
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error": "Non autorisé"})
+    streams = db.query(ExternalStream).order_by(desc(ExternalStream.created_at)).limit(300).all()
+    return JSONResponse({
+        "streams": [{
+            "id":          s.id,
+            "title":       s.title,
+            "category":    s.category,
+            "country":     s.country,
+            "url":         s.url,
+            "logo":        s.logo,
+            "quality":     s.quality,
+            "stream_type": s.stream_type,
+            "is_active":   s.is_active,
+            "viewers":     s.viewers or 0,
+            "referer":     s.referer,
+        } for s in streams]
+    })
+
+
+@app.post("/api/admin/external/{stream_id}/edit")
+async def admin_edit_external_form(
+    stream_id: str,
+    request: Request,
+    title:       str = Form(None),
+    stream_url:  str = Form(None),
+    category:    str = Form(None),
+    country:     str = Form(None),
+    logo:        str = Form(None),
+    quality:     str = Form(None),
+    referer:     str = Form(None),
+    db: Session = Depends(get_db),
+):
+    """Alias POST de PUT /api/admin/external/{id}/edit : un <form> HTML classique
+    (et le client fetch utilisé par le frontend admin) ne peuvent pas envoyer de
+    corps multipart avec la méthode PUT aussi simplement qu'avec POST."""
+    try:
+        require_admin(request)
+    except HTTPException:
+        return JSONResponse(status_code=401, content={"error": "Non autorisé"})
+
+    stream = db.query(ExternalStream).filter(ExternalStream.id == stream_id).first()
+    if not stream:
+        raise HTTPException(status_code=404, detail="Flux introuvable")
+
+    if title:       stream.title       = title[:200]
+    if stream_url:  stream.url         = stream_url[:2000]
+    if category:    stream.category    = category
+    if country:     stream.country     = country.upper()[:5]
+    if logo:        stream.logo        = logo[:500]
+    if quality:     stream.quality     = quality[:20]
+    if referer is not None:
+        stream.referer = referer[:500] or None
+    db.commit()
+    return JSONResponse({"success": True, "message": "Flux mis à jour"})
 
 
 @app.post("/api/admin/external/create")
@@ -5604,6 +6060,7 @@ async def admin_create_external(
     logo:        str = Form(""),
     description: str = Form(""),
     quality:     str = Form(""),
+    referer:     str = Form(""),
     db: Session = Depends(get_db)
 ):
     """Créer un nouveau flux externe"""
@@ -5621,6 +6078,7 @@ async def admin_create_external(
         language=language[:50],
         logo=logo[:500],
         quality=quality[:20],
+        referer=(referer[:500] if referer else None),
         is_active=True,
     )
     db.add(stream)
@@ -5631,7 +6089,7 @@ async def admin_create_external(
 
 @app.put("/api/admin/external/{stream_id}/edit")
 async def admin_edit_external(
-    stream_id: int,
+    stream_id: str,
     request: Request,
     title:       str = Form(None),
     stream_url:  str = Form(None),
@@ -5971,23 +6429,19 @@ async def submit_report(
 
 
 @app.delete("/api/favorites/{stream_id}")
-async def remove_favorite(stream_id: str, stream_type: str, request: Request, db: Session = Depends(get_db)):
-    """Supprimer un favori spécifique"""
+async def delete_favorite(stream_id: str, stream_type: str = None, request: Request = None, db: Session = Depends(get_db)):
+    """Supprimer un favori spécifique (aligné sur la table Favorite, comme /api/favorites/add)"""
     visitor_id = get_visitor_id(request)
     visitor = db.query(Visitor).filter(Visitor.visitor_id == visitor_id).first()
     if not visitor:
         return JSONResponse({"success": False, "error": "Visiteur inconnu"})
 
-    import json as _json
-    try:
-        favs = _json.loads(visitor.favorites or "[]")
-    except Exception:
-        favs = []
-
-    favs = [f for f in favs if not (f.get("stream_id") == stream_id and f.get("stream_type") == stream_type)]
-    visitor.favorites = _json.dumps(favs)
+    q = db.query(Favorite).filter(Favorite.visitor_id == visitor.id, Favorite.stream_id == stream_id)
+    if stream_type:
+        q = q.filter(Favorite.stream_type == stream_type)
+    count = q.delete(synchronize_session=False)
     db.commit()
-    return JSONResponse({"success": True, "count": len(favs)})
+    return JSONResponse({"success": True, "removed": count})
 
 
 # ── Routes d'enregistrement streaming ────────────────────────────────────
@@ -6026,7 +6480,17 @@ async def get_catalog(
     q = db.query(ExternalStream).filter(ExternalStream.is_active == True)
     if category:
         q = q.filter(ExternalStream.category.ilike(f"%{category}%"))
-    streams = q.order_by(ExternalStream.id.desc()).limit(limit).all()
+    # Comme l'ancienne version : les chaînes les plus regardées d'abord
+    # (desc(ExternalStream.viewers)), pas les plus récemment ajoutées —
+    # sinon "En direct maintenant" ne montre que le dernier lot synchronisé
+    # plutôt que les chaînes populaires (France 24, BBC, etc.). En plus,
+    # priorité aux chaînes reconnaissables (POPULAR_CHANNEL_KEYWORDS) tant
+    # que le compteur de vues n'a pas eu le temps de se remplir, et parmi
+    # celles-ci, la vraie chaîne avant sa version YouTube en doublon.
+    popular = or_(*[ExternalStream.title.ilike(f"%{kw}%") for kw in POPULAR_CHANNEL_KEYWORDS])
+    priority = case((popular, 0), else_=1)
+    is_youtube = case((ExternalStream.stream_type == "youtube", 1), else_=0)
+    streams = q.order_by(priority, is_youtube, desc(ExternalStream.viewers), ExternalStream.id.desc()).limit(limit).all()
 
     return JSONResponse({
         "streams": [{
@@ -6440,7 +6904,7 @@ async def admin_realtime_stats(request: Request, db: Session = Depends(get_db)):
     cutoff_24h = now - timedelta(hours=24)
     return JSONResponse({
         "active_users":    db.query(Visitor).filter(Visitor.last_seen >= cutoff_5m).count(),
-        "new_today":       db.query(Visitor).filter(Visitor.first_seen >= cutoff_24h).count(),
+        "new_today":       db.query(Visitor).filter(Visitor.created_at >= cutoff_24h).count(),
         "live_streams":    db.query(LiveStream).filter(LiveStream.is_live == True).count(),
         "pending_reports": db.query(Report).filter(Report.resolved == False).count(),
         "unread_feedback": db.query(UserFeedback).filter(UserFeedback.is_read == False).count(),
@@ -6537,9 +7001,8 @@ def _track_visit(request: Request, db: Session, page: str = "/"):
         visitor = db.query(Visitor).filter(Visitor.visitor_id == visitor_id).first()
         if visitor:
             visitor.last_seen  = now
-            visitor.last_page  = page[:200]
         else:
-            visitor = Visitor(visitor_id=visitor_id, ip_address=client_ip, user_agent=request.headers.get("user-agent","")[:500], first_seen=now, last_seen=now, page_count=1, last_page=page[:200], theme="auto", preferred_language="fr", favorites="[]")
+            visitor = Visitor(visitor_id=visitor_id, ip_address=client_ip, user_agent=request.headers.get("user-agent","")[:500], last_seen=now, theme="auto", preferred_language="fr")
             db.add(visitor)
         db.commit()
     except Exception as e:
@@ -6994,9 +7457,9 @@ async def generate_daily_stats(db: Session) -> dict:
     stats = {
         "generated_at":       now.isoformat(),
         "total_visitors":     db.query(Visitor).count(),
-        "new_visitors_24h":   db.query(Visitor).filter(Visitor.first_seen >= yesterday).count(),
-        "new_visitors_7d":    db.query(Visitor).filter(Visitor.first_seen >= last_week).count(),
-        "new_visitors_30d":   db.query(Visitor).filter(Visitor.first_seen >= last_month).count(),
+        "new_visitors_24h":   db.query(Visitor).filter(Visitor.created_at >= yesterday).count(),
+        "new_visitors_7d":    db.query(Visitor).filter(Visitor.created_at >= last_week).count(),
+        "new_visitors_30d":   db.query(Visitor).filter(Visitor.created_at >= last_month).count(),
         "total_streams":      db.query(LiveStream).count(),
         "live_streams":       db.query(LiveStream).filter(LiveStream.is_live == True).count(),
         "total_ext_channels": db.query(ExternalStream).count(),
@@ -7223,8 +7686,8 @@ async def profile_page(request: Request, db: Session = Depends(get_db)):
     stream_count = 0
 
     if visitor:
-        if visitor.first_seen:
-            delta = now - visitor.first_seen.replace(tzinfo=timezone.utc) if visitor.first_seen.tzinfo is None else now - visitor.first_seen
+        if visitor.created_at:
+            delta = now - visitor.created_at.replace(tzinfo=timezone.utc) if visitor.created_at.tzinfo is None else now - visitor.created_at
             days = delta.days
             if days == 0:   member_since = "aujourd'hui"
             elif days == 1: member_since = "hier"
@@ -7232,9 +7695,8 @@ async def profile_page(request: Request, db: Session = Depends(get_db)):
             elif days < 365:member_since = f"il y a {days//30} mois"
             else:           member_since = f"il y a {days//365} an(s)"
         lang_pref = visitor.preferred_language or "fr"
-        import json as _j
         try:
-            fav_count = len(_j.loads(visitor.favorites or "[]"))
+            fav_count = db.query(Favorite).filter(Favorite.visitor_id == visitor.id).count()
         except Exception:
             fav_count = 0
 
@@ -7342,12 +7804,17 @@ def _get_visitor_lang(request: Request, db: Session) -> str:
 # ── Routes API additionnelles ────────────────────────────────────────────
 @app.get("/api/channels/featured")
 async def get_featured_channels(limit: int = 12, db: Session = Depends(get_db)):
-    """Chaînes mises en avant (les plus récentes actives avec logo)"""
+    """Chaînes mises en avant : priorité aux chaînes reconnaissables
+    (POPULAR_CHANNEL_KEYWORDS, vraie chaîne avant sa version YouTube), puis
+    aux plus regardées — même logique que /api/catalog."""
+    popular = or_(*[ExternalStream.title.ilike(f"%{kw}%") for kw in POPULAR_CHANNEL_KEYWORDS])
+    priority = case((popular, 0), else_=1)
+    is_youtube = case((ExternalStream.stream_type == "youtube", 1), else_=0)
     channels = db.query(ExternalStream).filter(
         ExternalStream.is_active == True,
         ExternalStream.logo != None,
         ExternalStream.logo != "",
-    ).order_by(ExternalStream.id.desc()).limit(limit).all()
+    ).order_by(priority, is_youtube, desc(ExternalStream.viewers), ExternalStream.id.desc()).limit(limit).all()
     return JSONResponse({
         "channels": [{
             "id":          c.id,

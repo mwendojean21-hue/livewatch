@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Eye } from 'lucide-react'
 import type { CatalogStream } from '@/types/api'
@@ -13,24 +14,30 @@ function formatViewers(n?: number) {
 export function StreamCard({ stream }: { stream: CatalogStream }) {
   const cat = getCategory(stream.category)
   const Icon = cat.icon
+  // L'ancienne version affichait le logo "contain" sur un fond neutre (comme
+  // un badge de chaîne), jamais étiré/rogné en plein cadre — et repassait à
+  // l'icône de catégorie si l'image ne chargeait pas (beaucoup de logos de
+  // chaînes IPTV sont des liens externes parfois morts). object-cover pur
+  // sur un petit logo transparent donnait des cartes qui semblaient vides.
+  const [logoFailed, setLogoFailed] = useState(false)
+  const showLogo = !!stream.logo && !logoFailed
 
   return (
     <Link
       to={stream.url}
       className="card group flex flex-col overflow-hidden transition-transform hover:-translate-y-0.5"
     >
-      <div className="relative aspect-video w-full overflow-hidden bg-surface-2">
-        {stream.logo ? (
+      <div className={`relative flex aspect-video w-full items-center justify-center overflow-hidden ${showLogo ? 'bg-surface-2' : cat.chip}`}>
+        {showLogo ? (
           <img
             src={stream.logo}
             alt=""
             loading="lazy"
-            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+            onError={() => setLogoFailed(true)}
+            className="h-full w-full object-contain p-4 transition-transform duration-300 group-hover:scale-105"
           />
         ) : (
-          <div className={`flex h-full w-full items-center justify-center ${cat.chip}`}>
-            <Icon size={30} className={cat.ink} strokeWidth={1.75} />
-          </div>
+          <Icon size={30} className={cat.ink} strokeWidth={1.75} />
         )}
         <div className="absolute left-2.5 top-2.5"><LiveBadge /></div>
         {stream.quality && (
