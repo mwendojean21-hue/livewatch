@@ -9,6 +9,7 @@ Propriétaire: défini via les variables d'environnement ADMIN_* (voir .env)
 import os
 import sys
 import uuid
+import time
 import hashlib
 import json
 import random
@@ -178,6 +179,13 @@ class Settings:
     )
     ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
     OWNER_ID = ADMIN_EMAIL
+
+    # Secret partagé avec Vercel Cron (en-tête "Authorization: Bearer <valeur>"
+    # envoyé automatiquement par Vercel sur les requêtes cron quand la variable
+    # d'environnement CRON_SECRET est définie côté projet). Optionnel : si non
+    # défini, l'endpoint de cron reste accessible sans vérification — à définir
+    # en production pour éviter que n'importe qui puisse déclencher la sync.
+    CRON_SECRET = os.getenv("CRON_SECRET", "")
 
 
 
@@ -2242,6 +2250,158 @@ class IPTVSyncService:
                 logger.error(f"Erreur dans le sync périodique: {e}")
             await asyncio.sleep(settings.IPTV_SYNC_INTERVAL)
 
+    async def sync_next_batch(self, db: Session, time_budget_seconds: float = 25.0, max_playlists: int = 40) -> dict:
+        """Synchronise un LOT de playlists, borné en temps — pensé pour tourner
+        dans une seule invocation serverless (Vercel Cron) plutôt qu'en tâche
+        de fond illimitée (`sync_all_playlists`/`start_periodic_sync`, qui ne
+        peuvent pas survivre à la fin d'une requête sur un déploiement
+        serverless : la fonction est gelée dès la réponse envoyée, donc la
+        synchro s'interrompait toujours à peu près au même endroit et
+        repartait de zéro à chaque déclenchement — d'où le grand nombre de
+        pays configurés mais jamais réellement synchronisés).
+
+        Stratégie : traiter en priorité les playlists jamais synchronisées ou
+        synchronisées il y a le plus longtemps (ORDER BY last_sync ASC NULLS
+        FIRST). Comme cette méthode est appelée à intervalles réguliers
+        (cron), chaque appel avance un peu plus loin dans la liste — au bout
+        de plusieurs déclenchements, TOUTES les playlists finissent par être
+        couvertes, y compris celles qui échouaient jusqu'ici faute de temps.
+        """
+        started = time.monotonic()
+        stats = {"attempted": 0, "succeeded": 0, "empty": 0, "failed": 0, "total_channels": 0}
+
+        # 1) S'assurer que chaque entrée de IPTV_PLAYLISTS a bien une ligne en
+        #    base (opération locale, rapide, sans appel réseau) avant de
+        #    choisir le lot à traiter.
+        existing_names = {n for (n,) in db.query(IPTVPlaylist.name).all()}
+        for pl_data in IPTV_PLAYLISTS:
+            if pl_data["name"] not in existing_names:
+                db.add(IPTVPlaylist(**pl_data))
+        db.commit()
+
+        # 2) Sélectionner le lot : les moins récemment synchronisées d'abord.
+        batch = (
+            db.query(IPTVPlaylist)
+            .filter(IPTVPlaylist.is_active == True)
+            .order_by(IPTVPlaylist.last_sync.asc().nullsfirst())
+            .limit(max_playlists)
+            .all()
+        )
+        by_name = {p["name"]: p for p in IPTV_PLAYLISTS}
+
+        for db_pl in batch:
+            if time.monotonic() - started > time_budget_seconds:
+                break  # le prochain déclenchement reprendra où on s'est arrêté
+
+            pl_data = by_name.get(db_pl.name)
+            if not pl_data:
+                continue  # playlist retirée de la config depuis
+
+            stats["attempted"] += 1
+            try:
+                channels = await self.fetch_playlist(pl_data["name"], pl_data["url"])
+                await self._write_playlist_channels(db, db_pl, pl_data["name"], channels)
+                if channels:
+                    stats["total_channels"] += len(channels)
+                    stats["succeeded"] += 1
+                else:
+                    stats["empty"] += 1
+
+            except Exception as pl_err:
+                logger.error(f"Erreur playlist {pl_data.get('name','?')}: {pl_err}")
+                db.rollback()
+                try:
+                    # db_pl peut être périmé après le rollback : on le
+                    # recharge avant d'y toucher, plutôt que de risquer un
+                    # nouvel échec silencieux sur un objet obsolète.
+                    fresh_pl = db.query(IPTVPlaylist).filter(IPTVPlaylist.id == db_pl.id).first()
+                    if fresh_pl:
+                        fresh_pl.sync_status = "error"
+                        fresh_pl.sync_error = str(pl_err)[:500]
+                        fresh_pl.last_sync = datetime.utcnow()  # évite de re-tenter en boucle immédiate
+                        db.commit()
+                except Exception:
+                    db.rollback()
+                stats["failed"] += 1
+
+        stats["elapsed_seconds"] = round(time.monotonic() - started, 1)
+        stats["remaining_this_cycle"] = (
+            db.query(IPTVPlaylist)
+            .filter(IPTVPlaylist.is_active == True, IPTVPlaylist.last_sync.is_(None))
+            .count()
+        )
+        return stats
+
+    async def _write_playlist_channels(self, db: Session, db_pl, playlist_id: str, channels: list, chunk_size: int = 300) -> None:
+        """Écrit le résultat d'une synchro de playlist en base, avec une
+        vraie politique de ré-essai sur conflit transactionnel CockroachDB
+        (SerializationFailure / SQLSTATE 40001 — voir la doc CockroachDB sur
+        les erreurs de contention, qui recommande explicitement des
+        ré-essais avec backoff croissant plutôt qu'un abandon rapide).
+
+        Corrige deux limites de la version précédente :
+        - un seul ré-essai avec un délai fixe de 0.3s ne suffisait pas quand
+          la contention venait d'un autre déploiement (preview + prod, ou
+          deux exécutions de cron qui se chevauchent) tournant en même
+          temps sur la même base — observé dans les logs avec deux hôtes
+          Vercel différents synchronisant les mêmes playlists à la même
+          seconde ;
+        - les grosses playlists (ex: "index", 10 000+ chaînes) faisaient un
+          DELETE+INSERT massif dans une seule transaction : plus une
+          transaction est longue, plus elle a de chances d'entrer en
+          conflit avec une autre. Découpé en lots de `chunk_size` lignes,
+          chacun dans sa propre petite transaction — un conflit ne fait
+          alors perdre que ce lot, pas toute la playlist.
+        """
+        def _is_serialization_conflict(exc: Exception) -> bool:
+            msg = str(exc)
+            return "SerializationFailure" in msg or "40001" in msg or "restart transaction" in msg.lower()
+
+        async def _commit_with_retry(max_attempts: int = 4):
+            delay = 0.3
+            for attempt in range(max_attempts):
+                try:
+                    db.commit()
+                    return
+                except Exception as exc:
+                    db.rollback()
+                    if attempt == max_attempts - 1 or not _is_serialization_conflict(exc):
+                        raise
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 3.0)
+
+        if not channels:
+            fresh_pl = db.query(IPTVPlaylist).filter(IPTVPlaylist.id == db_pl.id).first()
+            fresh_pl.sync_status = "empty"
+            fresh_pl.sync_error = "Aucune chaîne trouvée ou playlist introuvable"
+            fresh_pl.last_sync = datetime.utcnow()
+            await _commit_with_retry()
+            return
+
+        # Supprimer les anciennes chaînes de cette playlist, par petits lots
+        # pour limiter la durée de chaque transaction.
+        while True:
+            ids = [row[0] for row in db.query(IPTVChannel.id).filter(
+                IPTVChannel.playlist_id == playlist_id
+            ).limit(chunk_size).all()]
+            if not ids:
+                break
+            db.query(IPTVChannel).filter(IPTVChannel.id.in_(ids)).delete(synchronize_session=False)
+            await _commit_with_retry()
+
+        # Réinsérer les nouvelles, par lots.
+        for i in range(0, len(channels), chunk_size):
+            for ch in channels[i:i + chunk_size]:
+                db.add(IPTVChannel(**ch))
+            await _commit_with_retry()
+
+        fresh_pl = db.query(IPTVPlaylist).filter(IPTVPlaylist.id == db_pl.id).first()
+        fresh_pl.channel_count = len(channels)
+        fresh_pl.sync_status = "success"
+        fresh_pl.sync_error = None
+        fresh_pl.last_sync = datetime.utcnow()
+        await _commit_with_retry()
+
     async def close(self):
         if self.session:
             await self.session.close()
@@ -2304,14 +2464,24 @@ class HLSProxy:
             "Cache-Control": "no-cache, no-store",
         }
 
-    def _rewrite_m3u8(self, content: str, base_url: str) -> str:
+    def _rewrite_m3u8(self, content: str, base_url: str, extra_headers: dict = None) -> str:
         """
         Réécrit un manifest M3U8 pour router tous les segments et sous-playlists
         via notre proxy. Gère :
         - URLs de segments (lignes sans #)
         - URI= dans les tags EXT-X-KEY, EXT-X-MAP, EXT-X-MEDIA
         - URLs relatives, absolues, avec query strings
+
+        `extra_headers` (ex: un Referer personnalisé pour une chaîne donnée,
+        voir ExternalStream.referer) est propagé dans l'URL de chaque segment
+        et sous-manifeste — avant ce correctif, seule la requête sur le
+        manifeste initial recevait ce header ; les segments qu'il référence
+        repartaient avec le Referer par défaut (dérivé de leur propre
+        origine), ce qui pouvait suffire quand ils sont sur le même domaine
+        mais pas quand la source sert ses segments depuis un autre domaine/CDN.
         """
+        headers_qs = f"&headers={quote(json.dumps(extra_headers), safe='')}" if extra_headers else ""
+
         try:
             parsed_base = urlparse(base_url)
             base_dir = base_url.rsplit("/", 1)[0] + "/"
@@ -2332,11 +2502,11 @@ class HLSProxy:
 
         def proxy_url_seg(raw: str) -> str:
             abs_url = to_absolute(raw)
-            return f"/proxy/segment?url={quote(abs_url, safe='')}"
+            return f"/proxy/segment?url={quote(abs_url, safe='')}{headers_qs}"
 
         def proxy_url_manifest(raw: str) -> str:
             abs_url = to_absolute(raw)
-            return f"/proxy/stream?url={quote(abs_url, safe='')}"
+            return f"/proxy/stream?url={quote(abs_url, safe='')}{headers_qs}"
 
         def rewrite_uri_attr(m):
             uri = m.group(1)
@@ -2400,7 +2570,7 @@ class HLSProxy:
                     )
 
                     if is_m3u8:
-                        rewritten = self._rewrite_m3u8(raw_text, url)
+                        rewritten = self._rewrite_m3u8(raw_text, url, extra_headers)
                         content_bytes = rewritten.encode("utf-8")
                         media_type = "application/vnd.apple.mpegurl"
                     else:
@@ -2423,10 +2593,20 @@ class HLSProxy:
 
             except httpx.HTTPStatusError as e:
                 last_err = e
-                if e.response.status_code in (403, 401):
-                    # Essayer prochain UA
+                status = e.response.status_code
+                if status in (401, 403, 400):
+                    # 400 peut aussi venir d'un User-Agent/entête rejeté par
+                    # la source (observé en pratique sur France 24 par ex.),
+                    # pas seulement 401/403 — sans ce cas, une seule requête
+                    # échouée abandonnait tout de suite sans jamais tester
+                    # les autres User-Agents de la rotation.
                     continue
-                raise HTTPException(status_code=e.response.status_code, detail=f"Source HTTP {e.response.status_code}")
+                if status == 429:
+                    # Limite de débit : une nouvelle identité n'aide pas ici,
+                    # il faut ralentir avant de réessayer.
+                    await asyncio.sleep(1.5)
+                    continue
+                raise HTTPException(status_code=status, detail=f"Source HTTP {status}")
             except httpx.TimeoutException:
                 last_err = Exception("Timeout")
                 continue
@@ -2436,8 +2616,19 @@ class HLSProxy:
 
         raise HTTPException(status_code=502, detail=f"Proxy inaccessible: {last_err}")
 
-    async def stream_segment(self, url: str) -> StreamingResponse:
-        """Stream un segment .ts / .m4s / audio en vrai streaming progressif."""
+    async def stream_segment(self, url: str, extra_headers: dict = None) -> StreamingResponse:
+        """Stream un segment .ts / .m4s / audio en vrai streaming progressif.
+
+        Corrigé : l'ancienne version créait le générateur de streaming AVANT
+        de savoir si la requête amont réussirait — une erreur HTTP (400,
+        401, 403, 429…) sur le segment n'était donc jamais détectée ici. Le
+        générateur se contentait de s'arrêter silencieusement
+        (`if resp.status_code >= 400: return`), renvoyant une réponse 200
+        VIDE au lecteur plutôt qu'une vraie erreur ou une nouvelle tentative
+        avec un autre User-Agent — un des cas les plus difficiles à
+        diagnostiquer (aucune trace d'erreur, juste un segment manquant qui
+        fait décrocher la lecture). On établit maintenant la connexion et on
+        vérifie le statut AVANT de renvoyer le flux."""
         origin = self._get_origin(url)
 
         # Détecter le Content-Type depuis l'extension (pas de HEAD = plus rapide)
@@ -2457,31 +2648,46 @@ class HLSProxy:
 
         last_err = None
         for ua_idx in range(len(self._USER_AGENTS)):
+            client = self._make_client(origin, ua_idx)
             try:
-                client = self._make_client(origin, ua_idx)
-
-                async def _gen(c=client, u=url):
-                    try:
-                        async with c:
-                            async with c.stream("GET", u) as resp:
-                                if resp.status_code >= 400:
-                                    return
-                                async for chunk in resp.aiter_bytes(65536):
-                                    yield chunk
-                    except Exception:
-                        return
-
-                return StreamingResponse(
-                    _gen(),
-                    media_type=ct,
-                    headers=self._build_cors_headers(),
-                )
-
+                req_headers = dict(extra_headers) if extra_headers else {}
+                req = client.build_request("GET", url, headers=req_headers)
+                resp = await client.send(req, stream=True)
             except Exception as e:
                 last_err = e
+                await client.aclose()
                 continue
 
-        raise HTTPException(status_code=502, detail=f"Segment inaccessible: {last_err}")
+            if resp.status_code in (400, 401, 403):
+                # Peut être un User-Agent/entête rejeté par la source :
+                # on essaie le prochain plutôt que d'abandonner ce segment.
+                await resp.aclose(); await client.aclose()
+                last_err = Exception(f"HTTP {resp.status_code}")
+                continue
+            if resp.status_code == 429:
+                await resp.aclose(); await client.aclose()
+                last_err = Exception("429 Too Many Requests")
+                await asyncio.sleep(1.0)
+                continue
+            if resp.status_code >= 400:
+                await resp.aclose(); await client.aclose()
+                raise HTTPException(status_code=resp.status_code, detail=f"Segment HTTP {resp.status_code}")
+
+            async def _gen(c=client, r=resp):
+                try:
+                    async for chunk in r.aiter_bytes(65536):
+                        yield chunk
+                finally:
+                    await r.aclose()
+                    await c.aclose()
+
+            return StreamingResponse(
+                _gen(),
+                media_type=ct,
+                headers=self._build_cors_headers(),
+            )
+
+        raise HTTPException(status_code=502, detail=f"Segment inaccessible : {last_err}")
 
 proxy = HLSProxy()
 
@@ -4069,9 +4275,15 @@ async def proxy_stream_options():
     )
 
 @app.get("/proxy/segment")
-async def proxy_segment_route(url: str):
+async def proxy_segment_route(url: str, headers: str = None):
     """Proxy segments .ts / .m4s / audio — streaming progressif réel"""
-    return await proxy.stream_segment(url)
+    custom_headers = None
+    if headers:
+        try:
+            custom_headers = json.loads(headers)
+        except Exception:
+            pass
+    return await proxy.stream_segment(url, custom_headers)
 
 @app.options("/proxy/segment")
 async def proxy_segment_options():
@@ -4285,13 +4497,17 @@ async def upload_thumbnail(request: Request, file: UploadFile = File(...)):
 # ==================== API IPTV ====================
 
 @app.post("/api/admin/iptv/sync")
-async def admin_sync_iptv(request: Request):
+async def admin_sync_iptv(request: Request, db: Session = Depends(get_db)):
+    """Déclenchement manuel depuis l'admin : traite un lot borné en temps
+    (comme le cron, voir /api/cron/sync-iptv) et attend le résultat avant de
+    répondre, au lieu de lancer une tâche de fond qui mourrait de toute façon
+    dès la fin de la requête sur un déploiement serverless. Un clic ne
+    synchronise donc qu'un lot ; le cron continue en arrière-plan, et
+    recliquer plus tard avance encore le curseur."""
     try: require_admin(request)
     except HTTPException: return JSONResponse(status_code=401, content={"success": False, "error": "Non autorisé"})
-    if iptv_sync.is_syncing:
-        return JSONResponse({"success": False, "message": "Synchronisation déjà en cours", "is_syncing": True})
-    asyncio.create_task(iptv_sync.sync_all_playlists())
-    return JSONResponse({"success": True, "message": "Synchronisation démarrée", "is_syncing": True})
+    stats = await iptv_sync.sync_next_batch(db, time_budget_seconds=8.0, max_playlists=40)
+    return JSONResponse({"success": True, "message": "Lot synchronisé", **stats})
 
 @app.get("/api/iptv/stats")
 async def iptv_stats(db: Session = Depends(get_db)):
@@ -4299,6 +4515,7 @@ async def iptv_stats(db: Session = Depends(get_db)):
     total_channels = db.query(IPTVChannel).count()
     active_channels = db.query(IPTVChannel).filter(IPTVChannel.is_active == True).count()
     total_playlists = db.query(IPTVPlaylist).count()
+    synced_playlists = db.query(IPTVPlaylist).filter(IPTVPlaylist.last_sync.isnot(None)).count()
 
     last_sync = db.query(IPTVPlaylist.last_sync).order_by(desc(IPTVPlaylist.last_sync)).first()
 
@@ -4312,6 +4529,7 @@ async def iptv_stats(db: Session = Depends(get_db)):
         "total_channels": total_channels,
         "active_channels": active_channels,
         "total_playlists": total_playlists,
+        "synced_playlists": synced_playlists,
         "last_sync": last_sync[0].isoformat() if last_sync and last_sync[0] else None,
         "top_categories": [{"category": c[0], "count": c[1]} for c in categories],
         "is_syncing": iptv_sync.is_syncing
@@ -4734,13 +4952,57 @@ async def admin_toggle_external(stream_id: str, request: Request, db: Session = 
 
 @app.post("/api/admin/iptv/playlist/{playlist_name}/refresh")
 async def admin_refresh_playlist(playlist_name: str, request: Request, db: Session = Depends(get_db)):
+    """Rafraîchit UNE seule playlist, pas tout le catalogue (l'ancien code
+    appelait par erreur sync_all_playlists() ici — chaque clic relançait
+    une synchro complète de 726 playlists en tâche de fond vouée à mourir
+    dès la fin de la requête, sans jamais réellement traiter celle demandée
+    en priorité)."""
     try: require_admin(request)
     except HTTPException: return JSONResponse(status_code=401, content={"success": False, "error": "Non autorisé"})
     playlist = db.query(IPTVPlaylist).filter(IPTVPlaylist.name == playlist_name).first()
     if not playlist:
         return JSONResponse(status_code=404, content={"error": "Playlist non trouvée"})
-    asyncio.create_task(iptv_sync.sync_all_playlists())
-    return JSONResponse({"success": True, "message": "Synchronisation lancée"})
+
+    pl_data = next((p for p in IPTV_PLAYLISTS if p["name"] == playlist_name), None)
+    if not pl_data:
+        return JSONResponse(status_code=404, content={"error": "Playlist retirée de la configuration"})
+
+    try:
+        channels = await iptv_sync.fetch_playlist(pl_data["name"], pl_data["url"])
+        # Réutilise le même écrivain avec ré-essai/découpage en lots que la
+        # synchro par lot (voir sync_next_batch) — un simple DELETE+INSERT
+        # en une seule transaction est ce qui provoquait les conflits
+        # CockroachDB répétés observés sur les grosses playlists.
+        await iptv_sync._write_playlist_channels(db, playlist, playlist_name, channels)
+        db.refresh(playlist)
+        return JSONResponse({"success": True, "message": f"« {playlist.display_name} » synchronisée", "channel_count": playlist.channel_count})
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)[:300]})
+
+@app.get("/api/cron/sync-iptv")
+async def cron_sync_iptv(request: Request, db: Session = Depends(get_db)):
+    """Point d'entrée pour Vercel Cron — remplace l'ancien modèle
+    "tâche de fond illimitée" (sync_all_playlists via asyncio.create_task /
+    start_periodic_sync) qui ne peut pas fonctionner en serverless : la
+    fonction est gelée dès que la réponse HTTP est envoyée, donc une tâche
+    de fond qui n'a pas fini à ce moment-là est simplement interrompue, sans
+    jamais reprendre où elle en était. Ici, chaque appel traite un lot borné
+    en temps et attend le résultat avant de répondre — configurer un cron
+    Vercel (voir vercel.json) pour rappeler cet endpoint toutes les 5-10
+    minutes fait progresser la synchro lot par lot jusqu'à couvrir tous les
+    pays configurés, au lieu de toujours s'arrêter aux mêmes 80 premiers.
+
+    Protégé par CRON_SECRET si défini (Vercel envoie automatiquement
+    "Authorization: Bearer <CRON_SECRET>" sur les requêtes cron)."""
+    if settings.CRON_SECRET:
+        auth = request.headers.get("authorization", "")
+        if auth != f"Bearer {settings.CRON_SECRET}":
+            raise HTTPException(status_code=401, detail="Non autorisé")
+
+    stats = await iptv_sync.sync_next_batch(db, time_budget_seconds=8.0, max_playlists=60)
+    logger.info(f"[cron] Lot IPTV synchronisé : {stats}")
+    return JSONResponse({"success": True, **stats})
 
 @app.get("/health")
 async def health_check(db: Session = Depends(get_db)):
@@ -5454,6 +5716,27 @@ async def get_viewer_count(stream_id: int, db: Session = Depends(get_db)):
 # ── Route like ────────────────────────────────────────────────────────────
 
 
+# Referer par défaut pour des hébergeurs connus pour exiger un Referer précis
+# et renvoyer 400/403 sans lui (ex: France 24 — observé en production,
+# `/proxy/stream` échouait par intermittence sur static.france24.com malgré
+# le fetch initial réussi). N'est utilisé QUE si l'admin n'a pas déjà défini
+# un referer personnalisé pour ce flux (voir ExternalStream.referer) — cette
+# table est un filet de sécurité, pas un remplacement du champ admin.
+KNOWN_REFERER_DEFAULTS = {
+    "france24.com": "https://www.france24.com/",
+}
+
+def _default_referer_for(url: str) -> str | None:
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return None
+    for domain, ref in KNOWN_REFERER_DEFAULTS.items():
+        if host == domain or host.endswith("." + domain):
+            return ref
+    return None
+
+
 # ── Résolution de lecture unifiée (JSON, pour le frontend React) ──────────
 # Les pages /watch/external/{id} et /watch/iptv/{id} font ce même travail
 # mais renvoient du HTML (Jinja). Le frontend a besoin d'un équivalent JSON
@@ -5478,7 +5761,7 @@ async def resolve_playback(kind: str, stream_id: str, db: Session = Depends(get_
         obj.viewers = (obj.viewers or 0) + 1
         db.commit()
         raw_url, stream_type, title = obj.url, obj.stream_type, obj.title
-        referer = obj.referer or None
+        referer = obj.referer or _default_referer_for(raw_url)
     elif kind == "iptv":
         obj = db.query(IPTVChannel).filter(IPTVChannel.id == stream_id).first()
         if not obj:
@@ -5487,11 +5770,13 @@ async def resolve_playback(kind: str, stream_id: str, db: Session = Depends(get_
         obj.last_seen = datetime.utcnow()
         db.commit()
         raw_url, stream_type, title = obj.url, (obj.stream_type or "hls"), obj.name
+        referer = _default_referer_for(raw_url)
     elif kind == "user":
         obj = db.query(UserStream).filter(UserStream.id == stream_id).first()
         if not obj:
             raise HTTPException(status_code=404, detail="Stream introuvable")
         raw_url, stream_type, title = (obj.stream_url or ""), "hls", obj.title
+        referer = _default_referer_for(raw_url)
     else:
         raise HTTPException(status_code=400, detail="type de flux inconnu")
 
@@ -5711,10 +5996,20 @@ async def admin_dashboard_summary(request: Request, db: Session = Depends(get_db
         "total_channels": total_iptv_ch + total_external,
         "new_reports":    pending_reports,
         "category_breakdown": [{"category": c or "autre", "count": n} for c, n in category_rows],
-        # Pas d'historique de spectateurs stocké côté backend pour l'instant
-        # (aucune table de séries temporelles) : tableau vide plutôt que des
-        # chiffres inventés. Le graphique doit gérer ce cas proprement.
-        "viewers_trend": [],
+        # Il n'existe pas de table de séries temporelles pour les vues par
+        # flux, mais Visitor.last_seen donne un vrai proxy honnête du trafic
+        # quotidien (nombre de visiteurs distincts actifs chaque jour) plutôt
+        # que de laisser ce graphique vide en permanence.
+        "viewers_trend": [
+            {
+                "label": (now - timedelta(days=i)).strftime("%a")[:3],
+                "viewers": db.query(Visitor).filter(
+                    Visitor.last_seen >= (now - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0),
+                    Visitor.last_seen <  (now - timedelta(days=i-1)).replace(hour=0, minute=0, second=0, microsecond=0),
+                ).count(),
+            }
+            for i in range(6, -1, -1)
+        ],
     })
 
 

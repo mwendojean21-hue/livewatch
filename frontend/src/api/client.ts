@@ -276,4 +276,15 @@ export const api = {
     request(`/api/admin/announcements/${id}/toggle`, { method: 'POST' }),
   deleteAnnouncement: (id: string) =>
     request(`/api/admin/announcements/${id}`, { method: 'DELETE' }),
+
+  // ── Synchronisation IPTV ────────────────────────────────────────────
+  iptvStats: () =>
+    request<{ total_playlists: number; synced_playlists: number; total_channels: number; last_sync: string | null }>('/api/iptv/stats'),
+  /** Déclenche un lot manuel (voir Livewatch.py sync_next_batch) — ne traite
+   * qu'une partie des playlists à la fois par conception (limite d'exécution
+   * serverless), le cron continue le reste automatiquement. */
+  triggerIptvSyncBatch: () =>
+    request<{ attempted: number; succeeded: number; empty: number; failed: number; elapsed_seconds: number; remaining_this_cycle: number }>(
+      '/api/admin/iptv/sync', { method: 'POST' },
+    ),
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Trash2, Check, Ban, Power, Star, Megaphone, Plus, Link2 } from 'lucide-react'
+import { Trash2, Check, Ban, Power, Star, Megaphone, Plus, Link2, RefreshCw } from 'lucide-react'
 import { api } from '@/api/client'
 import type {
   AdminReport, AdminExternalStream, AdminComment, AdminBlockedIp,
@@ -314,6 +314,77 @@ export function AnnouncementsPanel() {
             </IconButton>
           </Row>
         ))
+      )}
+    </div>
+  )
+}
+
+// ── Synchronisation IPTV ──────────────────────────────────────────
+export function IptvSyncPanel() {
+  const [stats, setStats] = useState<{ total_playlists: number; synced_playlists: number; total_channels: number; last_sync: string | null } | null>(null)
+  const [running, setRunning] = useState(false)
+  const [lastRun, setLastRun] = useState<{ attempted: number; succeeded: number; empty: number; failed: number; elapsed_seconds: number; remaining_this_cycle: number } | null>(null)
+
+  const load = () => { api.iptvStats().then(setStats).catch(() => setStats(null)) }
+  useEffect(load, [])
+
+  async function handleRunBatch() {
+    setRunning(true)
+    try {
+      const result = await api.triggerIptvSyncBatch()
+      setLastRun(result)
+      load()
+    } catch {
+      // ignoré — le prochain passage du cron (ou un nouveau clic) réessaiera
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  const pct = stats && stats.total_playlists > 0 ? Math.round((stats.synced_playlists / stats.total_playlists) * 100) : 0
+
+  return (
+    <div>
+      <p className="mb-4 text-sm text-ink-muted">
+        La synchronisation avance par petits lots (limite d'exécution du serveur), automatiquement
+        toutes les nuits via une tâche planifiée, ou manuellement avec le bouton ci-dessous. Chaque
+        clic traite les pays/playlists jamais synchronisés ou synchronisés depuis le plus longtemps.
+      </p>
+
+      {stats && (
+        <div className="mb-4">
+          <div className="mb-1.5 flex items-center justify-between text-sm">
+            <span className="text-ink-muted">Playlists synchronisées</span>
+            <span className="font-medium">{stats.synced_playlists} / {stats.total_playlists}</span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-surface-2">
+            <div className="h-full rounded-full bg-accent-2 transition-all" style={{ width: `${pct}%` }} />
+          </div>
+          <p className="mt-2 text-xs text-ink-muted">
+            {stats.total_channels.toLocaleString('fr-FR')} chaînes IPTV au total
+            {stats.last_sync && ` · dernière synchro : ${new Date(stats.last_sync).toLocaleString('fr-FR')}`}
+          </p>
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={handleRunBatch}
+        disabled={running}
+        className="flex items-center gap-1.5 rounded-full bg-accent-2 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+      >
+        <RefreshCw size={15} className={running ? 'animate-spin' : undefined} />
+        {running ? 'Synchronisation…' : 'Synchroniser un lot maintenant'}
+      </button>
+
+      {lastRun && (
+        <div className="mt-4 rounded-xl border border-border p-4 text-sm">
+          <p className="font-medium">Dernier lot : {lastRun.succeeded} réussi(s), {lastRun.empty} vide(s), {lastRun.failed} échec(s)</p>
+          <p className="mt-1 text-xs text-ink-muted">
+            {lastRun.attempted} playlist(s) traitée(s) en {lastRun.elapsed_seconds}s ·{' '}
+            {lastRun.remaining_this_cycle} jamais synchronisée(s) au total
+          </p>
+        </div>
       )}
     </div>
   )

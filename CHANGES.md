@@ -277,3 +277,351 @@ l'environnement serverless, sans reprise. Un vrai correctif demande de
 rendre la synchro reprenable (mémoriser où elle s'est arrêtée, par lots,
 d'un déclenchement à l'autre) — je ne l'ai pas encore implémenté, à faire
 dans une prochaine session si tu veux que je m'y attaque.
+
+## Session 8 — synchronisation IPTV rendue reprenable (le "82 pays sur 203")
+
+Correctif complet de la cause identifiée en Session 7.
+
+- **`sync_next_batch()` (nouvelle méthode)** : remplace le modèle "tout
+  traiter d'un coup en tâche de fond" par un traitement en LOT, borné en
+  temps (8s par défaut — la limite d'exécution la plus stricte des plans
+  Vercel, pour que ça marche sans configuration supplémentaire). Chaque
+  appel traite en priorité les playlists jamais synchronisées ou
+  synchronisées depuis le plus longtemps (`ORDER BY last_sync ASC NULLS
+  FIRST`) — donc des appels répétés finissent par couvrir tous les pays
+  configurés, au lieu de toujours s'arrêter aux mêmes ~80 premiers. Ajout
+  aussi d'un ré-essai automatique sur conflit transactionnel CockroachDB
+  (les erreurs `SerializationFailure`/`WriteTooOldError` très fréquentes
+  dans les logs), au lieu d'abandonner direct la playlist pour ce cycle.
+- **`GET /api/cron/sync-iptv`** (nouveau) : point d'entrée pour Vercel Cron,
+  protégé par `CRON_SECRET` si la variable d'environnement est définie
+  (recommandé). Ajouté à `vercel.json` (`"crons"`, tous les jours à minuit
+  UTC par défaut — le plan Hobby de Vercel limite à un cron par jour ; sur
+  un plan payant, tu peux resserrer l'intervalle, ex: `"*/10 * * * *"` pour
+  couvrir tous les pays en quelques heures au lieu de plusieurs jours).
+- **`POST /api/admin/iptv/sync`** (déclenchement manuel) : attend
+  maintenant réellement le résultat d'un lot et le retourne, au lieu de
+  lancer une tâche de fond qui mourait de toute façon à la fin de la
+  requête.
+- **`POST /api/admin/iptv/playlist/{name}/refresh`** : ancien bug trouvé au
+  passage — ce bouton "rafraîchir CETTE playlist" relançait en fait une
+  synchro de TOUTES les 726 playlists en tâche de fond, sans jamais
+  garantir que celle demandée soit traitée. Corrigé pour ne synchroniser
+  que la playlist demandée, en direct, avec un vrai retour de résultat.
+- **Nouvel onglet admin "Synchro IPTV"** : barre de progression
+  (playlists synchronisées / total), bouton "Synchroniser un lot
+  maintenant", et détail du dernier lot exécuté.
+
+**À faire côté Vercel pour profiter pleinement du correctif** : définir la
+variable d'environnement `CRON_SECRET` (recommandé, pas obligatoire), et si
+tu es sur un plan payant, resserrer l'intervalle du cron dans `vercel.json`
+pour que la couverture complète des pays ne prenne pas plusieurs jours.
+
+## Session 9 — lecteur reconstruit sur le modèle de l'ancien, France 24 fiabilisée, graphique noir corrigé
+
+- **Lecteur vidéo — vraie cause du "toujours rien"** : le nouveau lecteur ne
+  tentait qu'UNE seule méthode (hls.js via le proxy) et affichait une erreur
+  définitive au premier échec. En comparant avec l'ancien lecteur JS
+  (`_initHLSDirect → _initHLSProxy → _initSafariProxy → _initMP4Direct`), il
+  utilisait en réalité une **chaîne de secours à 4 niveaux** avec des
+  réglages hls.js (timeouts, retries) différents à chaque étage. Reproduit à
+  l'identique dans `VideoPlayer.tsx` :
+  1. hls.js sur l'URL directe (sans passer par notre proxy, quand la source
+     l'autorise)
+  2. hls.js sur l'URL proxifiée, timeouts plus tolérants (le cas normal)
+  3. `<video>` natif sur l'URL proxifiée
+  4. `<video>` natif sur l'URL directe (dernier recours)
+  Chaque niveau ne prend le relais que si le précédent échoue franchement
+  (erreur hls.js fatale, ou événement `error` du `<video>`) — l'erreur
+  visible ne s'affiche que si les 4 ont échoué.
+- **France 24 spécifiquement** : ajout d'une petite table de Referer par
+  défaut pour les hébergeurs connus pour l'exiger (`france24.com` →
+  `https://www.france24.com/`), appliquée automatiquement même si l'admin
+  n'a rien configuré manuellement (le champ `referer` de la Session 7 reste
+  prioritaire s'il est rempli). Ça ne garantit pas 100% de fiabilité — c'est
+  une source tierce, elle peut toujours limiter l'accès de son côté — mais
+  couvre le cas observé plusieurs fois dans les logs.
+- **Graphique "Spectateurs — 7 derniers jours" tout noir** : le composant
+  ne gérait pas le cas où `viewers_trend` est vide (aucune barre, aucun axe
+  → juste un rectangle vide sur fond sombre). Ajouté un message "Pas encore
+  d'historique" à la place. Et plutôt que de laisser ce tableau vide pour
+  toujours, il est maintenant rempli avec une vraie donnée honnête : le
+  nombre de visiteurs distincts actifs chaque jour (`Visitor.last_seen`) —
+  un proxy réel du trafic quotidien, faute d'avoir une table de séries
+  temporelles dédiée aux vues par flux.
+
+## Session 10 — audit honnête : qu'est-ce qui manquait encore ?
+
+Question posée directement : est-ce que tout avait vraiment été exploité de
+l'ancien lecteur ? Réponse honnête : non, pas tout à fait. Nouvelle
+vérification ligne par ligne plutôt que de simplement rassurer.
+
+Ce qui a été confirmé comme déjà couvert (rien à changer) :
+- L'ancien lecteur n'avait pas de récupération de "stall" (vidéo figée en
+  buffering), ni de watchdog/reconnexion automatique — la chaîne à 4 niveaux
+  de la Session 9 est bien toute l'étendue de sa résilience, rien manqué là.
+- L'icône "Cast" dans la marque Livewatch n'a jamais été une vraie
+  intégration Chromecast/AirPlay dans l'ancien code — juste un logo. Rien à
+  reproduire.
+- Le proxy backend décide déjà de réécrire ou non le contenu en se basant
+  sur le contenu réel (`#EXTM3U`), pas sur l'extension d'URL — un flux DASH
+  (.mpd) proxifié n'est donc pas corrompu par erreur. Pas de bug ici.
+
+Ce qui manquait réellement et vient d'être ajouté :
+- **Flux DASH (.mpd) jamais gérés du tout.** L'ancien lecteur avait une
+  branche dédiée avec dash.js (bibliothèque séparée de hls.js, qui ne sait
+  pas lire ce format). La réécriture React ne gérait que le HLS — toute
+  chaîne classée `stream_type = "dash"` échouait donc systématiquement, en
+  silence, sans jamais atteindre le vrai problème. Ajouté un chargement à la
+  demande de dash.js (même CDN que l'ancienne version) et une branche dédiée
+  dans `VideoPlayer.tsx`.
+- **Flux `mp4`** : passaient inutilement par hls.js (qui échoue à parser un
+  fichier vidéo brut comme un manifeste) avant de retomber sur le `<video>`
+  natif qui, lui, fonctionne directement. Optimisé pour aller droit au
+  natif.
+- **Flux `rtmp`** : tentaient toute la chaîne de secours pour rien — RTMP
+  n'est lisible dans aucun navigateur actuel (Flash n'existe plus), ni dans
+  l'ancien code ni dans le nouveau. Affiche maintenant un message honnête
+  immédiatement plutôt que de faire semblant d'essayer pendant plusieurs
+  secondes.
+
+**Limite restante, partagée avec l'ancien code (pas une régression)** : pour
+les flux DASH, seul le manifeste `.mpd` passe par notre proxy — les URLs des
+segments qu'il contient ne sont PAS réécrites pour passer par le proxy
+(contrairement au HLS, où `_rewrite_m3u8` le fait). Si la source DASH
+n'autorise pas le CORS sur ses segments, la lecture échouera quand même
+après le chargement du manifeste. L'ancien code avait exactement la même
+limite (`dashPlayer.initialize(v, _url, true)` pointe directement vers la
+source, jamais vers un proxy). Un vrai correctif demanderait d'écrire un
+réécriveur de manifeste DASH côté backend, équivalent à `_rewrite_m3u8` mais
+pour le XML DASH — pas fait ici, à évaluer si des chaînes DASH s'avèrent
+réellement utilisées dans le catalogue.
+
+## Session 11 — recherche ciblée pour renforcer la lecture de tous les flux
+
+Recherché les pratiques établies (docs officielles hls.js/dash.js, retours
+d'expérience de production) plutôt que de deviner, puis vérifié chaque piste
+contre le code réel (ancien et nouveau) avant d'implémenter.
+
+### Frontend (`VideoPlayer.tsx`)
+- **5ᵉ niveau de secours retrouvé et ajouté : iframe.** En revérifiant
+  l'ancien lecteur en détail, sa chaîne de secours avait en réalité 5
+  niveaux, pas 4 — `_initIframe()` était le vrai dernier recours (utile pour
+  les sources qui sont en fait des pages web/lecteurs embarqués, pas des
+  fichiers média bruts). Les échecs DASH y tombent directement aussi, comme
+  dans l'ancien code.
+- **Auto-guérison hls.js avant de changer de niveau**, recommandation
+  officielle du projet (`docs/API.md`, « fatal error recovery ») : sur une
+  erreur réseau fatale, `hls.startLoad()` ; sur une erreur média fatale,
+  `hls.recoverMediaError()`. Bornée à 2 tentatives par type d'erreur — les
+  retenter indéfiniment est un piège documenté (risque de boucle de
+  rechargement infinie, signalé par les mainteneurs eux-mêmes) plutôt qu'une
+  aide. Au-delà de la limite, on redescend dans la chaîne de secours comme
+  avant.
+
+### Backend (`Livewatch.py`)
+- **Cause directe des échecs répétés "Source HTTP 400" (France 24 et
+  d'autres)** : la rotation de User-Agent sur échec ne se déclenchait que
+  sur 401/403 — un 400 abandonnait immédiatement sans jamais essayer les
+  autres User-Agents. En pratique, un 400 peut aussi venir d'un
+  User-Agent/en-tête rejeté par la source. Élargi à 400/401/403, et ajouté
+  une pause avant nouvelle tentative sur 429 (limite de débit — changer
+  d'identité n'aide pas, il faut ralentir).
+- **Bug plus sérieux trouvé dans `/proxy/segment`** : le flux de streaming
+  était construit AVANT de savoir si la requête vers la source réussirait.
+  Une erreur HTTP sur un segment ne remontait donc jamais — le générateur
+  s'arrêtait juste silencieusement, renvoyant une réponse 200 VIDE au
+  lecteur plutôt qu'une vraie erreur ou une nouvelle tentative. C'est le
+  genre de panne la plus dure à diagnostiquer (rien dans les logs, juste un
+  segment manquant qui fait décrocher la lecture). Réécrit pour vérifier le
+  statut HTTP avant de renvoyer le flux, avec la même logique de rotation de
+  User-Agent que pour le manifeste.
+- **Referer personnalisé désormais propagé jusqu'aux segments.** Le Referer
+  défini pour une chaîne (Session 7) n'était appliqué qu'à la requête sur le
+  manifeste initial — les segments qu'il référence repartaient avec un
+  Referer par défaut dérivé de leur propre origine, ce qui suffit quand tout
+  est sur le même domaine mais pas quand une source sert ses segments depuis
+  un CDN séparé. Propagé dans les URLs de segments et sous-manifestes
+  générées par le proxy.
+
+### Ce qui a été vérifié comme déjà solide (rien changé)
+- Le proxy backend décide déjà de réécrire ou non le contenu selon le
+  contenu réel (`#EXTM3U`), pas l'extension d'URL — pas de risque de
+  corrompre un manifeste DASH.
+- hls.js gère déjà seul ses erreurs non-fatales (retries internes sur les
+  segments) — pas besoin d'ajouter une couche de retry maison par-dessus,
+  ça aurait fait doublon.
+
+## Session 11 — recherche ciblée + renforcement de bout en bout
+
+Recherche menée sur la documentation officielle hls.js/dash.js et des cas
+réels documentés (GitHub issues), plutôt que d'improviser des réglages.
+
+### Lecteur (frontend)
+- **5ᵉ niveau de secours retrouvé et ajouté** : en comparant à nouveau
+  ligne par ligne, l'ancien lecteur a en réalité 5 niveaux, pas 4 — le
+  dernier (`_initIframe`) embarque l'URL brute dans une `<iframe>` quand
+  tout le reste a échoué (utile pour les sources qui sont en fait des pages
+  web/lecteurs embarqués, pas des fichiers média). Ajouté comme dernier
+  recours avant le message d'erreur, et les échecs DASH y renvoient
+  directement (comme l'ancien code), plutôt que d'essayer les niveaux
+  vidéo/mp4 qui ont peu de chances de fonctionner pour une source DASH cassée.
+- **Auto-guérison hls.js avant de changer de niveau** (recommandation
+  officielle du projet, docs/API.md "fatal error recovery") : sur une
+  erreur fatale réseau, `hls.startLoad()` ; sur une erreur fatale média,
+  `hls.recoverMediaError()` — chacune limitée à 2 tentatives avant de
+  passer au niveau suivant. Une mise en garde documentée (issue hls.js
+  #5476, tutoriel dev.to) prévient justement qu'appeler ça sans limite peut
+  créer une boucle de rechargement infinie plutôt que d'aider — d'où la
+  limite. Les erreurs non-fatales ne sont pas touchées : hls.js les gère
+  déjà tout seul en interne.
+
+### Proxy (backend)
+- **Bug concret retrouvé, lié directement aux échecs France 24 observés** :
+  la rotation de User-Agent sur `/proxy/stream` ne se déclenchait que sur
+  401/403 — une réponse 400 (exactement ce qu'on voyait dans les logs)
+  abandonnait immédiatement sans jamais essayer les autres User-Agents de
+  la liste. Élargi (400 inclus), et ajout d'un vrai traitement du 429
+  (pause avant de réessayer, plutôt qu'une nouvelle identité qui n'aide pas
+  contre une limite de débit).
+- **Bug plus sérieux trouvé sur `/proxy/segment`** : le flux de streaming
+  était renvoyé au lecteur AVANT même de savoir si la requête vers la
+  source allait réussir. En cas d'erreur, le code se contentait de couper
+  le flux en silence (`if resp.status_code >= 400: return`) — le lecteur
+  recevait une réponse 200 VIDE au lieu d'une vraie erreur ou d'une
+  nouvelle tentative avec un autre User-Agent. C'est le genre de panne la
+  plus difficile à repérer : aucune trace d'erreur nulle part, juste un
+  segment manquant qui fait décrocher la lecture. Réécrit pour vérifier le
+  statut de la réponse AVANT de renvoyer le flux, avec la même logique de
+  rotation de User-Agent que le manifeste.
+- **Referer personnalisé désormais propagé aux segments, pas seulement au
+  manifeste** : avant ce correctif, un Referer personnalisé (Session 7)
+  n'était appliqué qu'à la requête du manifeste ; les segments qu'il
+  référence repartaient avec le Referer par défaut (dérivé de leur propre
+  origine) — suffisant quand ils sont sur le même domaine que le manifeste,
+  mais pas quand la source sert ses segments depuis un CDN séparé. Le
+  Referer personnalisé est maintenant propagé dans l'URL de chaque segment
+  et sous-manifeste réécrit.
+
+Cette session ne change rien qui se voie directement à l'écran — c'est du
+renforcement de fiabilité en profondeur, sur des cas qui ne se manifestent
+que par intermittence (d'où leur présence répétée mais irrégulière dans les
+logs depuis plusieurs sessions).
+
+## Session 12 — la synchro IPTV restait bloquée sur les mêmes grosses playlists
+
+Diagnostic à partir de logs récents : contrairement à ce qu'on pourrait
+croire, l'API elle-même est saine (tout répond en 200) — mais "index"
+(10 300+ chaînes), "france", "canada" et "suisse" échouaient avec la même
+`SerializationFailure` CockroachDB à quasiment chaque tentative, sans jamais
+progresser vers d'autres pays.
+
+Deux bugs concrets trouvés dans le correctif de la Session 8 :
+- **Un seul ré-essai, délai fixe de 0.3s** — largement insuffisant en cas de
+  vraie contention prolongée. Remplacé par jusqu'à 4 tentatives avec un
+  délai croissant (0.3s → 0.6s → 1.2s → jusqu'à 3s), et la détection ne se
+  fait plus au hasard : elle vérifie spécifiquement qu'il s'agit bien d'un
+  conflit de sérialisation (SQLSTATE 40001 / "SerializationFailure") avant
+  de ré-essayer, plutôt que de ré-essayer sur n'importe quelle erreur.
+- **Transactions énormes sur les grosses playlists** : "index" faisait un
+  DELETE + INSERT de plus de 10 000 lignes d'un coup, dans une seule
+  transaction — plus une transaction est longue, plus elle a de chances
+  d'entrer en conflit avec une écriture concurrente. Découpé en lots de 300
+  lignes, chacun dans sa propre petite transaction : un conflit ne fait
+  perdre que ce lot (et se rattrape via son propre ré-essai), pas toute la
+  playlist.
+- Le bouton admin "rafraîchir cette playlist" utilise maintenant le même
+  mécanisme robuste (`_write_playlist_channels`) que la synchro par lot,
+  au lieu de son propre DELETE+INSERT non protégé.
+
+**Point à vérifier de ton côté, que je ne peux pas corriger dans le code** :
+les logs montrent littéralement deux hôtes Vercel différents
+(`livewatch-pink.vercel.app` et un déploiement preview
+`livewatch-n2qj49fxb-walkers5.vercel.app`) qui synchronisaient les mêmes
+playlists à la même seconde. Si un déploiement preview a son propre cron
+actif (ou si quelqu'un a déclenché une synchro manuelle dessus), il rentre
+en concurrence directe avec la production sur la même base de données —
+c'est probablement le déclencheur principal de cette contention. Vérifier
+dans le tableau de bord Vercel qu'aucun déploiement preview obsolète ne
+tourne encore, et que le cron n'est configuré que sur la production.
+
+## Session 13 — le lecteur fait tourner le JS original, plus une réécriture
+
+Demande directe : arrêter de retraduire le lecteur en React/TypeScript à
+chaque session (chaque traduction pouvant introduire sa propre nuance
+perdue) et faire tourner le code original.
+
+- **`VideoPlayer.tsx` injecte maintenant le script hérité quasiment mot
+  pour mot** (extrait de la page `/watch/iptv/{id}` de l'ancien
+  `Livewatch.py` : `_detectType`, `wiInit`, `_initDASH`, `_initHLSDirect`,
+  `_initHLSProxy`, `_initSafariProxy`, `_initMP4Direct`, `_initAudio`,
+  `_showErr`/`_showFinalErr`) via un `<script>` créé et inséré dans le DOM,
+  au lieu d'une réécriture React de cette logique. hls.js et dash.js sont
+  chargés depuis EXACTEMENT les mêmes URLs CDN que l'ancienne version
+  (`hls.js@1.5.15`, `dashjs@4.7.4`) plutôt que la dépendance npm utilisée
+  jusqu'ici, pour que le code tourne dans les conditions les plus proches
+  possible de l'original.
+- Seuls deux ajouts, purement mécaniques, ne changeant rien au comportement
+  de lecture : `_url` vient des props React (au lieu d'un template Jinja),
+  et une fonction de nettoyage est exposée pour que hls.js soit bien détruit
+  en changeant de chaîne (l'ancien code ne s'appuyait que sur
+  `beforeunload`, qui ne se déclenche jamais lors d'une navigation interne à
+  une SPA — sans ce nettoyage, changer de chaîne plusieurs fois aurait
+  laissé d'anciennes instances hls.js tourner en arrière-plan).
+- Le Referer personnalisé par chaîne (Session 7, validé sur France 24) a été
+  réintégré séparément — l'ancien code ne l'avait pas, mais c'est le seul
+  changement de cette lignée de correctifs qui reposait sur une preuve
+  concrète plutôt qu'une supposition, donc gardé.
+- Les fonctions annexes de l'ancien script (favoris, signalement,
+  enregistrement, plein écran) n'ont pas été reprises : l'interface React
+  actuelle a déjà ses propres équivalents pour J'aime/Signaler/Commentaires,
+  les dupliquer aurait recréé deux systèmes concurrents pour la même chose.
+
+Si la lecture échoue encore après ce changement, ce ne sera plus imputable
+à une différence de traduction — le code qui tourne est, à ces deux ajouts
+mécaniques près, celui qui fonctionnait déjà en production.
+
+## Session 13 — le lecteur fait tourner le vrai code de l'ancien Livewatch
+
+Demande directe : après plusieurs passes de portage React qui n'ont
+toujours pas réglé tous les cas réels, reprendre littéralement le code de
+l'ancienne version plutôt que de continuer à le retraduire.
+
+**Ce qui a changé** : `VideoPlayer.tsx` ne réimplémente plus la logique de
+lecture en React/TypeScript. Il injecte désormais le script JS original
+extrait quasiment mot pour mot de `Livewatch.py` (la partie `<script>` des
+pages `/watch/iptv/{id}` et `/watch/external/{id}`) — `_detectType`,
+`wiInit`, `_initHLSDirect`, `_initHLSProxy`, `_initSafariProxy`,
+`_initMP4Direct`, `_initAudio`, `_initDASH`, `_showErr`/`_showFinalErr` —
+avec les mêmes réglages hls.js exacts à chaque étage (`enableWorker`,
+`lowLatencyMode`, timeouts, `xhrSetup`, `renderTextTracksNatively`), et la
+même CDN hls.js (1.5.15) que l'ancienne version, au lieu du paquet npm
+utilisé jusqu'ici.
+
+Seules deux adaptations, aucune ne touchant à la logique de lecture :
+1. `_url` vient des props React (`directUrl`) au lieu d'un template Jinja.
+2. `window.__wiCleanup` est exposé pour que React détruise proprement
+   hls.js en changeant de chaîne ou en quittant la page — l'ancien code ne
+   comptait que sur `beforeunload`, qui ne se déclenche jamais lors d'une
+   navigation interne à une SPA (seulement au vrai rechargement de page).
+   Sans ça, chaque changement de chaîne aurait laissé tourner une instance
+   hls.js orpheline en arrière-plan.
+
+**Gardé malgré la reprise du code d'origine** : le Referer personnalisé
+(Session 7, validé sur France 24) est toujours transmis — l'ancien script
+ne le connaissait pas, donc il a fallu l'ajouter en un point précis
+(construction de `_proxyUrl`) sans toucher au reste.
+
+**Abandonné** : l'auto-guérison hls.js ajoutée en Session 11
+(`startLoad()`/`recoverMediaError()` avant de changer de niveau). C'était
+une amélioration par rapport à l'ancien code, pas une reproduction fidèle —
+et comme elle n'a pas résolu le problème, mieux vaut revenir exactement au
+comportement d'origine, connu et éprouvé, plutôt que de garder une couche
+supplémentaire non testée par-dessus.
+
+Si la lecture ne fonctionne toujours pas après ce changement, cela voudra
+dire que le problème n'est pas dans le lecteur lui-même (puisque c'est
+maintenant littéralement le même code que l'ancienne version qui, elle,
+fonctionnait) — la piste suivante serait alors à chercher ailleurs : dans
+le proxy backend (déjà en partie durci en Session 11-12) ou dans
+l'environnement de déploiement lui-même.

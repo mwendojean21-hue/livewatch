@@ -5,13 +5,14 @@ import { SectionHeading, StatCard, Skeleton } from '@/components/ui'
 import { CategoryDonut, ViewersTrendChart } from '@/components/Charts'
 import { AdminLoginForm } from '@/components/AdminLoginForm'
 import {
-  ReportsPanel, ExternalStreamsPanel, CommentsPanel, IpsPanel, FeedbackPanel, AnnouncementsPanel,
+  ReportsPanel, ExternalStreamsPanel, CommentsPanel, IpsPanel, FeedbackPanel, AnnouncementsPanel, IptvSyncPanel,
 } from '@/components/admin/ModerationPanels'
 import type { AdminSummary } from '@/types/api'
 
 const TABS = [
   { id: 'overview', label: "Vue d'ensemble" },
   { id: 'streams', label: 'Flux externes' },
+  { id: 'iptv', label: 'Synchro IPTV' },
   { id: 'reports', label: 'Signalements' },
   { id: 'comments', label: 'Commentaires' },
   { id: 'ips', label: 'IPs bloquées' },
@@ -104,6 +105,7 @@ export function AdminPage() {
       )}
 
       {tab === 'streams' && <div className="card p-5"><ExternalStreamsPanel /></div>}
+      {tab === 'iptv' && <div className="card p-5"><IptvSyncPanel /></div>}
       {tab === 'reports' && <div className="card p-5"><ReportsPanel /></div>}
       {tab === 'comments' && <div className="card p-5"><CommentsPanel /></div>}
       {tab === 'ips' && <div className="card p-5"><IpsPanel /></div>}

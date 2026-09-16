@@ -9,6 +9,9 @@
       "entrypoint": "Livewatch:app"
     }
   },
+  "crons": [
+    { "path": "/api/cron/sync-iptv", "schedule": "0 0 * * *" }
+  ],
   "rewrites": [
     { "source": "/api/:path*", "destination": { "service": "backend" } },
     { "source": "/ws/:path*", "destination": { "service": "backend" } },
