@@ -2797,12 +2797,24 @@ def init_external_streams(db: Session):
     db.commit()
     
 def init_iptv_playlists(db: Session):
+    """Insère les playlists IPTV manquantes en une seule requête, en
+    ignorant celles qui existent déjà côté base (ON CONFLICT DO NOTHING)
+    plutôt que de vérifier ligne par ligne puis d'insérer : sur Vercel,
+    plusieurs cold starts peuvent tourner en parallèle et faire cette
+    vérification en même temps sur les mêmes playlists manquantes, ce qui
+    provoquait une erreur de clé dupliquée qui annulait TOUT le lot en
+    cours (d'où le nombre de pays qui ne dépassait jamais le même seuil)."""
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
     _VALID_COLS = {c.key for c in IPTVPlaylist.__table__.columns}
-    for playlist_data in IPTV_PLAYLISTS:
-        safe_data = {k: v for k, v in playlist_data.items() if k in _VALID_COLS}
-        existing = db.query(IPTVPlaylist).filter(IPTVPlaylist.name == safe_data["name"]).first()
-        if not existing:
-            db.add(IPTVPlaylist(**safe_data))
+    rows = [
+        {k: v for k, v in playlist_data.items() if k in _VALID_COLS}
+        for playlist_data in IPTV_PLAYLISTS
+    ]
+    if not rows:
+        return
+    stmt = pg_insert(IPTVPlaylist).values(rows)
+    stmt = stmt.on_conflict_do_nothing(index_elements=["name"])
+    db.execute(stmt)
     db.commit()
 
 def require_admin(request: Request) -> dict:
@@ -2986,11 +2998,14 @@ async def lifespan(app: FastAPI):
         db.close()
 
     # ── 4. Tâches de fond ──────────────────────────────────────────────
-    logger.info("Démarrage synchronisation IPTV...")
-    sync_task     = asyncio.create_task(iptv_sync.start_periodic_sync())
+    # sync_task (ancien "start_periodic_sync") retiré : il tournait en
+    # boucle infinie et ne pouvait jamais survivre à la fin d'une requête
+    # sur un déploiement serverless (voir /api/cron/sync-iptv et
+    # sync_next_batch, la version conçue pour Vercel Cron à la place).
+    logger.info("Démarrage des tâches de fond...")
     tracker_task  = asyncio.create_task(active_tracker.start_broadcast_loop())
     stats_task    = asyncio.create_task(_daily_stats_recorder())
-    logger.info("Services démarrés : IPTV sync + tracker + stats journalières")
+    logger.info("Services démarrés : tracker + stats journalières (IPTV sync via cron, voir /api/cron/sync-iptv)")
     logger.info(f"http://localhost:8001")
     logger.info(f"Admin : {settings.OWNER_ID}")
     logger.info(f"{len(EXTERNAL_STREAMS)} flux externes | {len(IPTV_PLAYLISTS)} playlists IPTV")
@@ -2999,7 +3014,6 @@ async def lifespan(app: FastAPI):
     yield
 
     # ── Shutdown ──────────────────────────────────────────────────────
-    sync_task.cancel()
     tracker_task.cancel()
     stats_task.cancel()
     await proxy.close()
