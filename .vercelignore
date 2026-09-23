@@ -1,0 +1,20 @@
+# Seul frontend/dist est lu à l'exécution par Livewatch.py — tout le reste
+# du dossier frontend/ (code source, node_modules, config) ne sert qu'au
+# développement local et n'a rien à faire dans le bundle de la fonction.
+frontend/node_modules
+frontend/src
+frontend/public
+frontend/package.json
+frontend/package-lock.json
+frontend/tsconfig.json
+frontend/tsconfig.app.json
+frontend/tsconfig.node.json
+frontend/vite.config.ts
+frontend/index.html
+frontend/.gitignore
+
+.venv
+.python-version
+__pycache__
+*.pyc
+.git
