@@ -639,6 +639,7 @@ dependencies = [
     { name = "python-jose", extra = ["cryptography"] },
     { name = "python-multipart" },
     { name = "sqlalchemy" },
+    { name = "sqlalchemy-cockroachdb" },
     { name = "uvicorn" },
     { name = "websockets" },
 ]
@@ -659,6 +660,7 @@ requires-dist = [
     { name = "python-jose", extras = ["cryptography"], specifier = "==3.3.0" },
     { name = "python-multipart", specifier = "==0.0.9" },
     { name = "sqlalchemy", specifier = "==2.0.35" },
+    { name = "sqlalchemy-cockroachdb", specifier = "==2.0.2" },
     { name = "uvicorn", specifier = "==0.30.6" },
     { name = "websockets", specifier = "==13.1" },
 ]
@@ -1360,6 +1362,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f0/f3/ee1e62fabdc10910b5ef720ae08e59bc785f26652876af3a50b89b97b412/SQLAlchemy-2.0.35-cp312-cp312-win32.whl", hash = "sha256:0f9f3f9a3763b9c4deb8c5d09c4cc52ffe49f9876af41cc1b2ad0138878453cf", size = 2060113, upload-time = "2024-09-16T20:54:15.16Z" },
     { url = "https://files.pythonhosted.org/packages/60/63/a3cef44a52979169d884f3583d0640e64b3c28122c096474a1d7cfcaf1f3/SQLAlchemy-2.0.35-cp312-cp312-win_amd64.whl", hash = "sha256:25b0f63e7fcc2a6290cb5f7f5b4fc4047843504983a28856ce9b35d8f7de03cc", size = 2085839, upload-time = "2024-09-16T20:54:17.11Z" },
     { url = "https://files.pythonhosted.org/packages/0e/c6/33c706449cdd92b1b6d756b247761e27d32230fd6b2de5f44c4c3e5632b2/SQLAlchemy-2.0.35-py3-none-any.whl", hash = "sha256:2ab3f0336c0387662ce6221ad30ab3a5e6499aab01b9790879b6578fd9b8faa1", size = 1881276, upload-time = "2024-09-16T23:14:28.324Z" },
+]
+
+[[package]]
+name = "sqlalchemy-cockroachdb"
+version = "2.0.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "sqlalchemy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f2/48/300113edbe1e2d2ad74efbc9b2865acb404019f37cc79e9878a47c984a08/sqlalchemy-cockroachdb-2.0.2.tar.gz", hash = "sha256:119756eb905855d6a11345b99cfe853031a3fe598a9c4bf35a8ddac9f89fe8cc", size = 27781, upload-time = "2024-01-10T18:25:53.035Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/db/31/26d9d5f59183f28ea79aaf713a6984bedbb96d1f4b7388ec68b98dbe27ea/sqlalchemy_cockroachdb-2.0.2-py3-none-any.whl", hash = "sha256:0d5d50e805b024cb2ccd85423a5c1a367d1a56a5cd0ea47765233fd47665070d", size = 21432, upload-time = "2024-01-10T18:25:50.84Z" },
 ]
 
 [[package]]
