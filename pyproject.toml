@@ -20,7 +20,6 @@ dependencies = [
     "m3u8==5.1.0",
     "sqlalchemy-cockroachdb==2.0.2",
     "python-dateutil==2.9.0.post0",
-    "yt-dlp==2024.8.6",
 ]
 
 [tool.uv]
