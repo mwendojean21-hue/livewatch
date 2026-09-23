@@ -17,4 +17,4 @@ frontend/.gitignore
 .python-version
 __pycache__
 *.pyc
-.git
+.git/**
