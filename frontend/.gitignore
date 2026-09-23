@@ -8,8 +8,8 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
-dist
-dist-ssr
+# dist n'est PAS ignoré ici : dans ce déploiement en un seul service,
+# Livewatch.py sert directement frontend/dist/, donc il doit être commité.
 *.local
 
 # Editor directories and files

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Cast, Copy, Check, Radio, Square, ExternalLink } from 'lucide-react'
+import { Cast, Copy, Check, Radio, Square, ExternalLink, AlertTriangle } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { api } from '@/api/client'
 import { CATEGORIES } from '@/lib/categories'
@@ -80,7 +80,23 @@ export function GoLivePage() {
             ci-dessous, puis lancez la diffusion avant de cliquer sur « Je suis en direct ».
           </p>
 
-          <div className="mt-5 space-y-3">
+          {/* AVERTISSEMENT : il n'existe actuellement aucun serveur
+              d'ingestion RTMP ni de service de transcodage vers HLS derrière
+              cette URL — voir CHANGES.md. La diffuser telle quelle laissait
+              croire à tort que la diffusion allait fonctionner une fois OBS
+              configuré, sans jamais expliquer pourquoi le direct restait
+              introuvable ensuite. Mieux vaut prévenir maintenant que laisser
+              découvrir un flux mort après coup. */}
+          <div className="mt-4 flex items-start gap-2 rounded-xl border border-accent/30 bg-accent/10 px-4 py-3 text-sm text-accent">
+            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+            <span>
+              Fonctionnalité pas encore opérationnelle : aucun serveur de diffusion en direct n'est
+              connecté à cette URL pour le moment, donc un flux envoyé ici ne sera pas visible par
+              les spectateurs. Les informations ci-dessous sont fournies à titre de test uniquement.
+            </span>
+          </div>
+
+          <div className="mt-3 space-y-3">
             <CopyField label="URL du serveur (RTMP)" value={result.rtmpUrl} />
             <CopyField label="Clé de diffusion" value={result.stream_key} />
           </div>

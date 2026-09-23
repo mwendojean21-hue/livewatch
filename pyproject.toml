@@ -1,31 +1,29 @@
 [project]
 name = "livewatch"
-version = "7.0.0"
+version = "1.0.0"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi",
-    "uvicorn",
-    "sqlalchemy",
-    "psycopg2-binary",
-    "python-dotenv",
-    "python-jose[cryptography]",
-    "passlib[bcrypt]",
-    "httpx",
-    "aiofiles",
-    "python-multipart",
-    "sqlalchemy-cockroachdb",
-    "psycopg2-binary",
-    "Pillow",
-    "m3u8",
-    "python-dateutil",
-    "yt-dlp",
-    "aiohttp",
-    "jinja2",
+    "fastapi==0.115.0",
+    "uvicorn==0.30.6",
+    "websockets==13.1",
+    "sqlalchemy==2.0.35",
+    "sqlalchemy-cockroachdb==2.0.2",
+    "psycopg2-binary==2.9.9",
+    "python-dotenv==1.0.1",
+    "python-jose[cryptography]==3.3.0",
+    "passlib[bcrypt]==1.7.4",
+    "python-multipart==0.0.9",
+    "jinja2==3.1.4",
+    "aiofiles==24.1.0",
+    "aiohttp==3.10.5",
+    "httpx==0.27.2",
+    "Pillow==10.4.0",
+    "m3u8==5.1.0",
+    "python-dateutil==2.9.0.post0",
 ]
 
-[build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
+[tool.uv]
+package = false
 
 [tool.vercel]
 entrypoint = "Livewatch:app"

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Trash2, Check, Ban, Power, Star, Megaphone, Plus, Link2, RefreshCw } from 'lucide-react'
 import { api } from '@/api/client'
 import type {
@@ -323,7 +323,12 @@ export function AnnouncementsPanel() {
 export function IptvSyncPanel() {
   const [stats, setStats] = useState<{ total_playlists: number; synced_playlists: number; total_channels: number; last_sync: string | null } | null>(null)
   const [running, setRunning] = useState(false)
+  const [autoRunning, setAutoRunning] = useState(false)
   const [lastRun, setLastRun] = useState<{ attempted: number; succeeded: number; empty: number; failed: number; elapsed_seconds: number; remaining_this_cycle: number } | null>(null)
+  // Sert à arrêter la boucle « tout synchroniser » proprement entre deux
+  // lots (voir handleRunAll) plutôt que de dépendre d'un state React qui
+  // ne serait pas encore à jour dans la même boucle.
+  const stopRef = useRef(false)
 
   const load = () => { api.iptvStats().then(setStats).catch(() => setStats(null)) }
   useEffect(load, [])
@@ -341,14 +346,50 @@ export function IptvSyncPanel() {
     }
   }
 
+  /** Enchaîne les lots automatiquement jusqu'à couverture complète du
+   * catalogue, au lieu d'attendre le cron quotidien (qui, sur le plan
+   * gratuit de Vercel, ne peut être déclenché qu'une fois par 24h — voir
+   * DEPLOIEMENT.md) ou de cliquer manuellement des dizaines de fois. Chaque
+   * lot reste une requête HTTP normale et bornée en temps côté serveur
+   * (sync_next_batch) ; on relance juste le lot suivant dès que le précédent
+   * répond, tant qu'il reste des playlists jamais synchronisées et que
+   * l'admin n'a pas cliqué sur « Arrêter ». */
+  async function handleRunAll() {
+    stopRef.current = false
+    setAutoRunning(true)
+    try {
+      while (!stopRef.current) {
+        const result = await api.triggerIptvSyncBatch()
+        setLastRun(result)
+        load()
+        if (result.remaining_this_cycle <= 0) break
+        // Petite pause pour ne pas marteler le serveur/la source IPTV en
+        // continu et laisser la barre de progression visiblement avancer.
+        await new Promise((r) => setTimeout(r, 800))
+      }
+    } catch {
+      // Une erreur réseau ponctuelle arrête la boucle ; « Tout synchroniser »
+      // peut être relancé, il reprendra là où c'est resté (voir last_sync
+      // ASC NULLS FIRST côté serveur).
+    } finally {
+      setAutoRunning(false)
+    }
+  }
+
+  function handleStop() {
+    stopRef.current = true
+  }
+
   const pct = stats && stats.total_playlists > 0 ? Math.round((stats.synced_playlists / stats.total_playlists) * 100) : 0
+  const running_any = running || autoRunning
 
   return (
     <div>
       <p className="mb-4 text-sm text-ink-muted">
         La synchronisation avance par petits lots (limite d'exécution du serveur), automatiquement
-        toutes les nuits via une tâche planifiée, ou manuellement avec le bouton ci-dessous. Chaque
-        clic traite les pays/playlists jamais synchronisés ou synchronisés depuis le plus longtemps.
+        toutes les nuits via une tâche planifiée, ou manuellement ci-dessous. « Synchroniser un lot »
+        traite un seul lot ; « Tout synchroniser maintenant » les enchaîne jusqu'à couverture complète
+        du catalogue, sans attendre le prochain passage du cron.
       </p>
 
       {stats && (
@@ -367,22 +408,45 @@ export function IptvSyncPanel() {
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={handleRunBatch}
-        disabled={running}
-        className="flex items-center gap-1.5 rounded-full bg-accent-2 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
-      >
-        <RefreshCw size={15} className={running ? 'animate-spin' : undefined} />
-        {running ? 'Synchronisation…' : 'Synchroniser un lot maintenant'}
-      </button>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={handleRunBatch}
+          disabled={running_any}
+          className="flex items-center gap-1.5 rounded-full bg-surface-2 px-4 py-2 text-sm font-medium disabled:opacity-60"
+        >
+          <RefreshCw size={15} className={running ? 'animate-spin' : undefined} />
+          {running ? 'Synchronisation…' : 'Synchroniser un lot'}
+        </button>
+
+        {!autoRunning ? (
+          <button
+            type="button"
+            onClick={handleRunAll}
+            disabled={running_any}
+            className="flex items-center gap-1.5 rounded-full bg-accent-2 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+          >
+            <RefreshCw size={15} />
+            Tout synchroniser maintenant
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={handleStop}
+            className="flex items-center gap-1.5 rounded-full bg-accent px-4 py-2 text-sm font-medium text-white"
+          >
+            <RefreshCw size={15} className="animate-spin" />
+            Arrêter (lot en cours…)
+          </button>
+        )}
+      </div>
 
       {lastRun && (
         <div className="mt-4 rounded-xl border border-border p-4 text-sm">
           <p className="font-medium">Dernier lot : {lastRun.succeeded} réussi(s), {lastRun.empty} vide(s), {lastRun.failed} échec(s)</p>
           <p className="mt-1 text-xs text-ink-muted">
             {lastRun.attempted} playlist(s) traitée(s) en {lastRun.elapsed_seconds}s ·{' '}
-            {lastRun.remaining_this_cycle} jamais synchronisée(s) au total
+            {lastRun.remaining_this_cycle} jamais synchronisée(s) restante(s)
           </p>
         </div>
       )}

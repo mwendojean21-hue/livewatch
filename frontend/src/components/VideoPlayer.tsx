@@ -95,8 +95,10 @@ export function VideoPlayer({ src, directUrl, proxyHeaders, type = 'hls', poster
 
       // dash.js n'est chargé qu'à la demande (évite d'alourdir le
       // chargement initial pour les chaînes qui n'en ont pas besoin), mais
-      // AVANT de lancer le script si le type est déjà connu comme DASH.
-      if (directUrl && /\.mpd(\?|$)/i.test(directUrl)) {
+      // AVANT de lancer le script si le type est déjà connu comme DASH —
+      // que ce soit via le type renvoyé par le backend (le cas le plus
+      // fiable) ou, à défaut, l'extension de l'URL.
+      if (type === 'dash' || (directUrl && /\.mpd(\?|$)/i.test(directUrl))) {
         try { await loadScriptOnce(DASH_JS_CDN, () => !!(window as any).dashjs) } catch { /* voir _initDASH */ }
       }
       if (cancelled) return
@@ -108,24 +110,50 @@ export function VideoPlayer({ src, directUrl, proxyHeaders, type = 'hls', poster
       // instance hls.js au moment où l'effet précédent a été nettoyé.
       containerRef.current?.querySelectorAll('script[data-lw-player]').forEach((el) => el.remove())
       const proxyHeadersQs = proxyHeaders ? `&headers=${encodeURIComponent(proxyHeaders)}` : ''
+      // Le backend a déjà déterminé le type de flux le plus fiable possible
+      // (extension ET heuristiques propres à chaque source — voir
+      // HLSProxy._detect_type côté Livewatch.py, plus complet que ce qu'un
+      // simple test d'extension peut faire côté client). Avant ce correctif,
+      // ce script ignorait totalement `type` et redevinait tout depuis
+      // l'URL : un flux audio sans extension reconnaissable (icecast, URL
+      // sans .mp3 dans le chemin) ou un flux RTMP/RTSP tombait dans le
+      // chemin HLS par défaut et terminait sur le message générique
+      // "hors ligne ou géo-bloqué", qui masquait la vraie cause.
+      const backendTypeJson = JSON.stringify(type || '')
       script.text = `
         (function(){
           var _url  = ${JSON.stringify(directUrl || '')};
+          var _backendType = ${backendTypeJson};
           var _hls  = null;
           var _proxyUrl = _url ? '/proxy/stream?url='+encodeURIComponent(_url)+${JSON.stringify(proxyHeadersQs)} : '';
 
-          function _detectType(url) {
+          function _detectType(url, hint) {
+            // Le backend a la priorité : il sait des choses que l'URL seule
+            // ne dit pas (type déclaré dans la playlist M3U, Content-Type
+            // observé lors d'un précédent essai, etc.).
+            if (hint === 'audio' || hint === 'mp4' || hint === 'dash' || hint === 'hls' || hint === 'rtmp') return hint;
             if (!url) return 'hls';
             var u = url.split('?')[0].toLowerCase();
-            if (u.endsWith('.mp3') || u.endsWith('.aac') || u.endsWith('.flac')) return 'audio';
-            if (u.endsWith('.mp4') || u.endsWith('.webm')) return 'mp4';
+            if (u.startsWith('rtmp://') || u.startsWith('rtsp://')) return 'rtmp';
+            if (u.endsWith('.mp3') || u.endsWith('.aac') || u.endsWith('.flac') || u.endsWith('.ogg') || u.endsWith('.opus') || u.indexOf('icecast') !== -1) return 'audio';
+            if (u.endsWith('.mp4') || u.endsWith('.webm') || u.endsWith('.mkv') || u.endsWith('.mov')) return 'mp4';
             if (u.endsWith('.mpd')) return 'dash';
             return 'hls';
           }
-          var _type = _detectType(_url);
+          var _type = _detectType(_url, _backendType);
 
           function wiInit(){
             if (!_url) { _showErr('URL du flux manquante.'); return; }
+            if (_type === 'rtmp') {
+              // Un navigateur ne peut pas lire du RTMP/RTSP directement —
+              // aucun réglage du lecteur ne changera ça sans un service de
+              // transcodage serveur dédié (absent de ce déploiement). Le dire
+              // clairement plutôt que d'afficher le message générique
+              // "hors ligne ou géo-bloqué", qui laisse penser à tort que la
+              // source elle-même est en cause.
+              _showErr('Ce flux utilise le protocole RTMP/RTSP, illisible directement dans un navigateur (nécessite un transcodage serveur vers HLS, non configuré ici).');
+              return;
+            }
             if (_type === 'audio') { _initAudio(); }
             else if (_type === 'mp4') { _initMP4Direct(); }
             else if (_type === 'dash') { _initDASH(); }
@@ -139,7 +167,21 @@ export function VideoPlayer({ src, directUrl, proxyHeaders, type = 'hls', poster
               try {
                 var dashPlayer = dashjs.MediaPlayer().create();
                 dashPlayer.initialize(v, _url, true);
-                dashPlayer.on(dashjs.MediaPlayer.events.ERROR, function(){ _showFinalErr(); });
+                dashPlayer.on(dashjs.MediaPlayer.events.ERROR, function(){
+                  // Repli proxy : beaucoup de sources DASH bloquent le CORS
+                  // en lecture directe depuis le navigateur (comme pour le
+                  // HLS) ; avant ce correctif, une erreur dashjs finissait
+                  // directement en échec sans jamais essayer /proxy/stream.
+                  if (v.dataset.dashProxied) { _showFinalErr(); return; }
+                  v.dataset.dashProxied = '1';
+                  try { dashPlayer.reset(); } catch(e){}
+                  if (_proxyUrl) {
+                    try {
+                      dashPlayer.initialize(v, _proxyUrl, true);
+                      dashPlayer.on(dashjs.MediaPlayer.events.ERROR, function(){ _showFinalErr(); });
+                    } catch(e) { _showFinalErr(); }
+                  } else { _showFinalErr(); }
+                });
               } catch (e) {
                 _showFinalErr();
               }
@@ -223,19 +265,36 @@ export function VideoPlayer({ src, directUrl, proxyHeaders, type = 'hls', poster
 
           function _initAudio(){
             var v = document.getElementById('wi-video');
-            if (!v) return;
+            if (!v || !_url) { _showFinalErr(); return; }
             var container = v.parentNode;
             var audio = document.createElement('audio');
             audio.id = 'wi-audio';
             audio.controls = true; audio.autoplay = true;
             audio.style.cssText = 'width:100%;max-width:400px;position:absolute;bottom:20px;left:50%;transform:translateX(-50%);';
-            audio.innerHTML = '<source src="'+(_proxyUrl||_url)+'" type="audio/mpeg"><source src="'+_url+'">';
             v.style.display = 'none';
             container.appendChild(audio);
+
+            // Repli en deux temps, avec un vrai message final si les deux
+            // échouent — avant ce correctif, le second échec (URL directe
+            // après échec du proxy) ne déclenchait plus aucun message : la
+            // page restait silencieusement bloquée sans indiquer que le
+            // flux était réellement inaccessible.
+            var _triedDirect = false;
+            function onAudioError(){
+              if (!_triedDirect && _url && audio.src !== _url) {
+                _triedDirect = true;
+                audio.src = _url;
+                audio.load();
+              } else {
+                audio.removeEventListener('error', onAudioError);
+                if (audio.parentNode) audio.parentNode.removeChild(audio);
+                v.style.display = '';
+                _showFinalErr();
+              }
+            }
+            audio.addEventListener('error', onAudioError);
+            audio.src = _proxyUrl || _url;
             audio.load();
-            audio.addEventListener('error', function(){
-              audio.src = _url; audio.load();
-            });
           }
 
           function _showFinalErr(){ _showErr('Flux inaccessible. Il est peut-être hors ligne ou géo-bloqué.'); }

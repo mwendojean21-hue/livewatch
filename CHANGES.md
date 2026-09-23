@@ -508,120 +508,148 @@ renforcement de fiabilité en profondeur, sur des cas qui ne se manifestent
 que par intermittence (d'où leur présence répétée mais irrégulière dans les
 logs depuis plusieurs sessions).
 
-## Session 12 — la synchro IPTV restait bloquée sur les mêmes grosses playlists
+## Session — Plafond à 82 pays, 404 sur des chaînes listées, lecteur "tout flux"
 
-Diagnostic à partir de logs récents : contrairement à ce qu'on pourrait
-croire, l'API elle-même est saine (tout répond en 200) — mais "index"
-(10 300+ chaînes), "france", "canada" et "suisse" échouaient avec la même
-`SerializationFailure` CockroachDB à quasiment chaque tentative, sans jamais
-progresser vers d'autres pays.
+Trois symptômes distincts remontés par l'utilisateur, trois causes distinctes
+trouvées (aucune n'était un bug aléatoire du lecteur) :
 
-Deux bugs concrets trouvés dans le correctif de la Session 8 :
-- **Un seul ré-essai, délai fixe de 0.3s** — largement insuffisant en cas de
-  vraie contention prolongée. Remplacé par jusqu'à 4 tentatives avec un
-  délai croissant (0.3s → 0.6s → 1.2s → jusqu'à 3s), et la détection ne se
-  fait plus au hasard : elle vérifie spécifiquement qu'il s'agit bien d'un
-  conflit de sérialisation (SQLSTATE 40001 / "SerializationFailure") avant
-  de ré-essayer, plutôt que de ré-essayer sur n'importe quelle erreur.
-- **Transactions énormes sur les grosses playlists** : "index" faisait un
-  DELETE + INSERT de plus de 10 000 lignes d'un coup, dans une seule
-  transaction — plus une transaction est longue, plus elle a de chances
-  d'entrer en conflit avec une écriture concurrente. Découpé en lots de 300
-  lignes, chacun dans sa propre petite transaction : un conflit ne fait
-  perdre que ce lot (et se rattrape via son propre ré-essai), pas toute la
-  playlist.
-- Le bouton admin "rafraîchir cette playlist" utilise maintenant le même
-  mécanisme robuste (`_write_playlist_channels`) que la synchro par lot,
-  au lieu de son propre DELETE+INSERT non protégé.
+### 1. Le nombre de pays plafonnait à ~82 malgré un catalogue bien plus large
 
-**Point à vérifier de ton côté, que je ne peux pas corriger dans le code** :
-les logs montrent littéralement deux hôtes Vercel différents
-(`livewatch-pink.vercel.app` et un déploiement preview
-`livewatch-n2qj49fxb-walkers5.vercel.app`) qui synchronisaient les mêmes
-playlists à la même seconde. Si un déploiement preview a son propre cron
-actif (ou si quelqu'un a déclenché une synchro manuelle dessus), il rentre
-en concurrence directe avec la production sur la même base de données —
-c'est probablement le déclencheur principal de cette contention. Vérifier
-dans le tableau de bord Vercel qu'aucun déploiement preview obsolète ne
-tourne encore, et que le cron n'est configuré que sur la production.
+`sync_next_batch()` (le mécanisme déjà en place pour contourner la limite
+d'exécution serverless — voir session précédente) appelait `fetch_playlist()`
+**une playlist à la fois, en série**, alors que `fetch_playlist()` a son
+propre sémaphore de concurrence (`settings.IPTV_CONCURRENT_DOWNLOADS`) prévu
+pour tourner en parallèle mais jamais exploité par cet appelant. Avec un
+temps réseau typique de 1 à 3s par playlist, un budget de 8s ne laissait
+passer que 2 à 4 playlists réellement synchronisées par appel — sur un
+catalogue de ~300 pays/playlists, il fallait donc des semaines de cron
+quotidien (`vercel.json`, une seule exécution par jour) pour tout couvrir.
 
-## Session 13 — le lecteur fait tourner le JS original, plus une réécriture
+**Correctif** :
+- `sync_next_batch()` télécharge maintenant les playlists du lot **en
+  parallèle** (`asyncio.wait` avec annulation propre des tâches qui
+  dépassent le budget de temps), l'écriture en base restant volontairement
+  séquentielle ensuite (une Session SQLAlchemy synchrone n'est pas sûre en
+  usage concurrent).
+- `IPTV_CONCURRENT_DOWNLOADS` relevé de 3 à 8.
+- Panneau admin : nouveau bouton **« Tout synchroniser maintenant »**
+  (`ModerationPanels.tsx`) qui enchaîne les lots automatiquement jusqu'à
+  couverture complète, avec un bouton Arrêter — plus besoin d'attendre le
+  cron quotidien ou de cliquer des dizaines de fois.
+- **Reste à votre charge, hors de portée d'un correctif de code** : le cron
+  Vercel Hobby ne peut être programmé qu'une fois par jour. Pour une
+  synchro automatique plus fréquente sans le bouton admin, soit passer sur
+  un plan Vercel qui autorise un cron plus rapproché, soit faire appeler
+  `/api/cron/sync-iptv` toutes les 5-10 min par un service externe gratuit
+  (ex. cron-job.org) — protégé par `CRON_SECRET` si défini.
 
-Demande directe : arrêter de retraduire le lecteur en React/TypeScript à
-chaque session (chaque traduction pouvant introduire sa propre nuance
-perdue) et faire tourner le code original.
+### 2. Erreurs 404 sur des chaînes pourtant visibles dans la liste
 
-- **`VideoPlayer.tsx` injecte maintenant le script hérité quasiment mot
-  pour mot** (extrait de la page `/watch/iptv/{id}` de l'ancien
-  `Livewatch.py` : `_detectType`, `wiInit`, `_initDASH`, `_initHLSDirect`,
-  `_initHLSProxy`, `_initSafariProxy`, `_initMP4Direct`, `_initAudio`,
-  `_showErr`/`_showFinalErr`) via un `<script>` créé et inséré dans le DOM,
-  au lieu d'une réécriture React de cette logique. hls.js et dash.js sont
-  chargés depuis EXACTEMENT les mêmes URLs CDN que l'ancienne version
-  (`hls.js@1.5.15`, `dashjs@4.7.4`) plutôt que la dépendance npm utilisée
-  jusqu'ici, pour que le code tourne dans les conditions les plus proches
-  possible de l'original.
-- Seuls deux ajouts, purement mécaniques, ne changeant rien au comportement
-  de lecture : `_url` vient des props React (au lieu d'un template Jinja),
-  et une fonction de nettoyage est exposée pour que hls.js soit bien détruit
-  en changeant de chaîne (l'ancien code ne s'appuyait que sur
-  `beforeunload`, qui ne se déclenche jamais lors d'une navigation interne à
-  une SPA — sans ce nettoyage, changer de chaîne plusieurs fois aurait
-  laissé d'anciennes instances hls.js tourner en arrière-plan).
-- Le Referer personnalisé par chaîne (Session 7, validé sur France 24) a été
-  réintégré séparément — l'ancien code ne l'avait pas, mais c'est le seul
-  changement de cette lignée de correctifs qui reposait sur une preuve
-  concrète plutôt qu'une supposition, donc gardé.
-- Les fonctions annexes de l'ancien script (favoris, signalement,
-  enregistrement, plein écran) n'ont pas été reprises : l'interface React
-  actuelle a déjà ses propres équivalents pour J'aime/Signaler/Commentaires,
-  les dupliquer aurait recréé deux systèmes concurrents pour la même chose.
+Chaque resynchronisation d'une playlist supprime puis recrée ses lignes
+`IPTVChannel`, et l'ID de chaque ligne était un `uuid4` **aléatoire** à
+chaque fois. Un ID de chaîne vu par le frontend (catalogue en cache,
+favoris) devenait donc invalide dès la resynchro suivante, même si la
+chaîne existait toujours.
 
-Si la lecture échoue encore après ce changement, ce ne sera plus imputable
-à une différence de traduction — le code qui tourne est, à ces deux ajouts
-mécaniques près, celui qui fonctionnait déjà en production.
+**Correctif** : `parse_m3u()` calcule maintenant un ID **déterministe**
+(`uuid5`, dérivé de `playlist_id` + `tvg-id` ou nom, désambiguïsé en cas de
+doublons dans la même playlist) — la même chaîne garde le même ID d'une
+synchro à l'autre.
 
-## Session 13 — le lecteur fait tourner le vrai code de l'ancien Livewatch
+### 3. Lecteur : flux ignorés ou mal diagnostiqués
 
-Demande directe : après plusieurs passes de portage React qui n'ont
-toujours pas réglé tous les cas réels, reprendre littéralement le code de
-l'ancienne version plutôt que de continuer à le retraduire.
+- `VideoPlayer.tsx` ignorait entièrement le `stream_type` déjà déterminé
+  par le backend (`/api/play/...`) et redevinait tout depuis l'extension de
+  l'URL côté client — moins fiable (un flux audio sans `.mp3` dans l'URL,
+  par ex. un flux icecast, tombait dans le mauvais chemin de lecture).
+  Le type backend est maintenant prioritaire.
+- Flux RTMP/RTSP : aucun cas dédié, ils tombaient dans le chemin HLS par
+  défaut et échouaient avec le message générique "hors ligne ou
+  géo-bloqué" — trompeur, puisque la vraie cause est qu'**un navigateur ne
+  peut pas lire du RTMP/RTSP directement**, quel que soit l'état de la
+  source. Message dédié, honnête, ajouté.
+- DASH (`.mpd`) : aucun repli proxy en cas d'échec direct (contrairement au
+  HLS) ; ajouté. Limite connue : `/proxy/stream` ne réécrit pour l'instant
+  que les manifestes M3U8, pas les manifestes MPD — un flux DASH dont le
+  manifeste passe par le proxy mais dont les segments sont bloqués par
+  CORS peut donc encore échouer. Non traité dans cette passe (réécriture
+  XML MPD à part entière, plus lourde qu'un simple repli).
+- Lecture audio : un second échec (après l'échec du proxy) ne montrait plus
+  aucun message — la page restait bloquée en silence. Corrigé pour afficher
+  le message final si les deux tentatives échouent.
 
-**Ce qui a changé** : `VideoPlayer.tsx` ne réimplémente plus la logique de
-lecture en React/TypeScript. Il injecte désormais le script JS original
-extrait quasiment mot pour mot de `Livewatch.py` (la partie `<script>` des
-pages `/watch/iptv/{id}` et `/watch/external/{id}`) — `_detectType`,
-`wiInit`, `_initHLSDirect`, `_initHLSProxy`, `_initSafariProxy`,
-`_initMP4Direct`, `_initAudio`, `_initDASH`, `_showErr`/`_showFinalErr` —
-avec les mêmes réglages hls.js exacts à chaque étage (`enableWorker`,
-`lowLatencyMode`, timeouts, `xhrSetup`, `renderTextTracksNatively`), et la
-même CDN hls.js (1.5.15) que l'ancienne version, au lieu du paquet npm
-utilisé jusqu'ici.
+### Le live personnel : PAS un bug du lecteur, pas de correctif de code possible ici
 
-Seules deux adaptations, aucune ne touchant à la logique de lecture :
-1. `_url` vient des props React (`directUrl`) au lieu d'un template Jinja.
-2. `window.__wiCleanup` est exposé pour que React détruise proprement
-   hls.js en changeant de chaîne ou en quittant la page — l'ancien code ne
-   comptait que sur `beforeunload`, qui ne se déclenche jamais lors d'une
-   navigation interne à une SPA (seulement au vrai rechargement de page).
-   Sans ça, chaque changement de chaîne aurait laissé tourner une instance
-   hls.js orpheline en arrière-plan.
+`POST /api/streams` renvoie `rtmp_url: "rtmp://localhost/..."` et
+`hls_url: "/live/{clé}/index.m3u8"` — cette dernière route **n'existe nulle
+part** dans le backend, et il n'y a dans tout le fichier aucun serveur
+d'ingestion RTMP ni de pipeline ffmpeg pour produire du HLS à partir d'un
+direct utilisateur. Ce n'est pas réalisable sur des fonctions serverless
+Vercel (pas de processus persistant, pas de port TCP ouvert en continu) :
+il faut un vrai service média (serveur dédié, ou fournisseur tiers type
+Cloudflare Stream Live / Mux / AWS IVS, qui fournit une URL d'ingestion
+RTMP(S) + une URL de lecture HLS via une simple API, sans qu'il soit
+nécessaire d'héberger soi-même ffmpeg/RTMP). En attendant cette
+intégration, `GoLivePage.tsx` affiche maintenant un avertissement clair au
+lieu de laisser croire que la diffusion va fonctionner une fois OBS
+configuré.
 
-**Gardé malgré la reprise du code d'origine** : le Referer personnalisé
-(Session 7, validé sur France 24) est toujours transmis — l'ancien script
-ne le connaissait pas, donc il a fallu l'ajouter en un point précis
-(construction de `_proxyUrl`) sans toucher au reste.
+## Session — Compteur de spectateurs : bug critique (`await` manquant) + passage au comptage par IP
 
-**Abandonné** : l'auto-guérison hls.js ajoutée en Session 11
-(`startLoad()`/`recoverMediaError()` avant de changer de niveau). C'était
-une amélioration par rapport à l'ancien code, pas une reproduction fidèle —
-et comme elle n'a pas résolu le problème, mieux vaut revenir exactement au
-comportement d'origine, connu et éprouvé, plutôt que de garder une couche
-supplémentaire non testée par-dessus.
+Symptôme rapporté : un utilisateur seul, en faisant des allers-retours sur
+son propre live, se retrouvait avec « 18 spectateurs ».
 
-Si la lecture ne fonctionne toujours pas après ce changement, cela voudra
-dire que le problème n'est pas dans le lecteur lui-même (puisque c'est
-maintenant littéralement le même code que l'ancienne version qui, elle,
-fonctionnait) — la piste suivante serait alors à chercher ailleurs : dans
-le proxy backend (déjà en partie durci en Session 11-12) ou dans
-l'environnement de déploiement lui-même.
+### Cause réelle : un `await` manquant empêchait TOUT nettoyage à la déconnexion
+
+Dans `@app.websocket("/ws/{stream_id}")` (chat + compteur du live personnel,
+table `UserStream`), les deux blocs `except` appelaient :
+
+```python
+manager.disconnect(websocket, stream_id, visitor_id)   # sans await
+```
+
+`ConnectionManager.disconnect` est une méthode `async`. L'appeler sans
+`await` crée l'objet coroutine sans jamais exécuter son corps — le
+nettoyage (retrait du spectateur de la liste des connexions actives)
+**ne s'exécutait donc jamais**, à aucune déconnexion, quelle qu'en soit la
+cause (fermeture d'onglet, navigation, aller-retour). Le compteur ne
+pouvait que monter, jamais redescendre — exactement le symptôme décrit.
+
+En bonus, l'identifiant utilisé pour dédupliquer les spectateurs
+(`visitor_id`) provenait d'un cookie qui n'est pas toujours transmis lors
+de la poignée de main WebSocket ; quand il manquait, un nouvel ID aléatoire
+était généré à chaque connexion — ce qui aurait de toute façon empêché
+toute déduplication correcte même si le `await` avait été présent.
+
+### Correctif
+
+- `manager.disconnect(...)` est maintenant systématiquement appelé avec
+  `await` (les deux blocs `except`), et le compteur est recalculé après
+  toute déconnexion, normale ou non.
+- Le comptage se fait maintenant **par adresse IP connectée** (demande
+  explicite), avec un compte de références par IP
+  (`viewer_ip_conns: {stream_id: {ip: nb_connexions_actives}}`) : plusieurs
+  onglets ou reconnexions depuis la même IP ne comptent qu'une fois tant
+  qu'au moins une connexion de cette IP reste active — fini le comptage par
+  `visitor_id` (peu fiable) ou par simple incrément de connexion (comptait
+  chaque onglet séparément).
+- Le second système de chat/spectateurs (`@app.websocket("/ws/stream/{stream_id}")`,
+  table `LiveStream`) avait le même défaut (+1 par connexion, sans
+  déduplication) ; corrigé avec la même logique par IP
+  (`ConnectionManager.touch_ip` / `untouch_ip`, espace de noms séparé pour
+  ne jamais mélanger les deux tables).
+- `GET /api/streams/{stream_id}/viewers` interrogeait la table `LiveStream`
+  avec un paramètre typé `int` alors que les ID sont des UUID — 422
+  systématique pour tout appel réel. Réaligné sur `UserStream` (la table
+  réellement utilisée par `/api/streams/create`) avec un `stream_id: str`.
+
+### Point d'architecture à noter, non traité ici
+
+Le code contient **deux tables de streams personnels qui se chevauchent** :
+`UserStream` (réellement utilisée par la création de live) et `LiveStream`
+(avec ses propres colonnes `viewer_count`/`is_live`, mais jamais alimentée
+par le flux de création réel). Plusieurs routes/websockets lisent encore
+`LiveStream` par erreur ou par héritage d'une itération précédente du code.
+Une vraie clarification (fusionner ou supprimer `LiveStream`) permettrait
+d'éviter que ce genre d'incohérence ne réapparaisse ailleurs — je peux m'en
+charger si vous voulez, mais c'est un chantier à part.
