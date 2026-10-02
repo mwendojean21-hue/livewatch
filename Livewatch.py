@@ -3,13 +3,12 @@ Livewatch - Plateforme complète de streaming
 Version 6.5 ULTIMATE - IPTV.org complet (pays/subdivisions/villes/catégories) + YouTube + Multi-Decoder + Lecteur Universel
 Auteur: Livewatch Team
 Licence: MIT
-Propriétaire: défini via les variables d'environnement ADMIN_* (voir .env)
+Propriétaire: erickbenoit337@gmail.com / WALKER92259
 """
 
 import os
 import sys
 import uuid
-import time
 import hashlib
 import json
 import random
@@ -99,7 +98,7 @@ for _d in (TEMPLATES_DIR, UPLOADS_DIR, THUMBNAILS_DIR, RECORDINGS_DIR):
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, Text, Float, ForeignKey, Index, and_, or_, desc, func, case
+from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, Text, Float, ForeignKey, Index, and_, or_, desc, func
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import sessionmaker, Session, relationship, declarative_base
 from sqlalchemy.pool import QueuePool
@@ -120,47 +119,22 @@ except ImportError:
 
 # ==================== CONFIGURATION AMÉLIORÉE ====================
 
-# ==================== CONFIGURATION AMÉLIORÉE ====================
-
-def _require_env(name: str, hint: str) -> str:
-    """Exige une variable d'environnement sensible, sans valeur par défaut.
-
-    CORRECTIF SÉCURITÉ : ce fichier codait auparavant en dur un mot de passe
-    PostgreSQL réel, un mot de passe admin fixe et une clé JWT fixe comme
-    valeurs par défaut. Ces valeurs ont pu être exposées (partagées, versionnées,
-    passées à un outil tiers) et doivent être considérées comme compromises.
-    Elles ne sont plus embarquées ici : l'application refuse de démarrer sans
-    variables d'environnement explicites, plutôt que de retomber silencieusement
-    sur un secret public.
-    """
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(
-            f"Variable d'environnement manquante : {name}. {hint} "
-            f"Définissez-la (fichier .env en local, ou variable d'environnement "
-            f"sur votre hébergeur) avant de démarrer l'application."
-        )
-    return value
-
-
 class Settings:
     APP_NAME = "Livewatch"
     APP_VERSION = "7.0 ULTIMATE"
     APP_DESCRIPTION = "Plateforme de streaming ultime — TV, Sports, Chaînes télévisions mondiales, YouTube Live, Radio & Lives communautaires"
 
-    # Sécurité — aucune valeur par défaut : à définir via l'environnement.
-    SECRET_KEY = _require_env(
-        "SECRET_KEY",
-        "Générez-en une avec : python -c \"import secrets; print(secrets.token_hex(32))\"."
-    )
+    # Sécurité
+    SECRET_KEY = os.getenv("SECRET_KEY", "livewatch-secret-key-walker92259-fixed-2024")
     ALGORITHM = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
     # ── Base de données PostgreSQL ──────────────────────────────────────────
     # Format : postgresql://user:password@host:port/dbname
-    DATABASE_URL = _require_env(
+    # Peut aussi être fourni via la variable d'environnement DATABASE_URL
+    DATABASE_URL = os.getenv(
         "DATABASE_URL",
-        "Format attendu : postgresql://user:password@host:port/dbname."
+        "postgresql://livewatch_9y2l_user:s3OTHyEHP0z2DrKEOqBn04x3EGPciPbt@dpg-d71svqvgi27c73fndrug-a/livewatch_9y2l"
     )
     # Alembic / psycopg2 veut "postgresql://" pas "postgres://" (Heroku legacy)
     if DATABASE_URL.startswith("postgres://"):
@@ -171,23 +145,11 @@ class Settings:
     DATABASE_POOL_TIMEOUT  = int(os.getenv("DB_POOL_TIMEOUT",  "30"))
     DATABASE_POOL_RECYCLE  = int(os.getenv("DB_POOL_RECYCLE",  "1800"))  # 30 min
 
-    # Admin par défaut (propriétaire) — aucune valeur par défaut non plus.
-    ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
-    ADMIN_PASSWORD = _require_env(
-        "ADMIN_PASSWORD",
-        "Choisissez un mot de passe fort, propre à ce déploiement."
-    )
-    ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
-    OWNER_ID = ADMIN_EMAIL
-
-    # Secret partagé avec Vercel Cron (en-tête "Authorization: Bearer <valeur>"
-    # envoyé automatiquement par Vercel sur les requêtes cron quand la variable
-    # d'environnement CRON_SECRET est définie côté projet). Optionnel : si non
-    # défini, l'endpoint de cron reste accessible sans vérification — à définir
-    # en production pour éviter que n'importe qui puisse déclencher la sync.
-    CRON_SECRET = os.getenv("CRON_SECRET", "")
-
-
+    # Admin par défaut (propriétaire)
+    ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "WALKER92259")
+    ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "WALKER92259")
+    ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "erickbenoit337@gmail.com")
+    OWNER_ID = "erickbenoit337@gmail.com"
 
     # Streaming utilisateur
     MAX_STREAM_DURATION_HOURS = 12
@@ -217,12 +179,7 @@ class Settings:
     IPTV_BASE_URL = "https://iptv-org.github.io/iptv"
     IPTV_TIMEOUT = 120
     IPTV_MAX_RETRIES = 3
-    # Relevé de 3 à 8 : sync_next_batch() lance désormais ses téléchargements
-    # de playlists EN PARALLÈLE (voir plus bas) au lieu de un par un — cette
-    # valeur borne combien peuvent réellement tourner en même temps. fetch_playlist()
-    # respecte déjà cette limite via son propre self.semaphore, donc l'augmenter
-    # ici suffit à accélérer sync_next_batch() sans rien changer d'autre.
-    IPTV_CONCURRENT_DOWNLOADS = 8
+    IPTV_CONCURRENT_DOWNLOADS = 3
 
     # YouTube
     YOUTUBE_TIMEOUT = 60
@@ -1675,20 +1632,6 @@ EXTERNAL_STREAMS = [
     {"title":"RTBF (YouTube Live)","category":"entertainment","subcategory":"youtube","country":"BE","language":"fr","url":"https://www.youtube.com/watch?v=0cJtFpXXwMc","logo":"https://upload.wikimedia.org/wikipedia/commons/thumb/9/95/RTBF_2019_logo.svg/200px-RTBF_2019_logo.svg.png","proxy_needed":False,"quality":"HD","stream_type":"youtube"},
 ]
 
-# ==================== CHAÎNES MISES EN AVANT ====================
-# Liste de mots-clés (titres de chaînes internationales/nationales connues,
-# déjà présentes dans les données ci-dessus) utilisée pour faire remonter des
-# chaînes reconnaissables dans le catalogue et les chaînes "à la une", plutôt
-# que de dépendre uniquement du compteur de vues (qui part à 0 pour tout le
-# monde sur un déploiement encore peu visité). Ce n'est PAS un chiffre de
-# popularité inventé — juste une priorité d'affichage.
-POPULAR_CHANNEL_KEYWORDS = [
-    "france 24", "bbc world", "bbc news", "bbc one",
-    "cnn international", "al jazeera english", "al jazeera arabic",
-    "euronews", "cgtn international", "cgtn news", "dw news", "dw english",
-    "bfm tv", "sky news", "rt news", "tf1", "france 2", "m6",
-]
-
 # ==================== CATÉGORIES ====================
 
 CATEGORIES = [
@@ -1897,47 +1840,27 @@ yt_service = YouTubeService()
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, List[WebSocket]] = {}
+        self.stream_viewers: Dict[str, Dict[str, datetime]] = {}
         self.comment_rate_limit: Dict[str, List[datetime]] = {}
-        # Compteur de spectateurs par ADRESSE IP (et non par visitor_id ou par
-        # simple connexion) : stream_id -> {ip: nombre de connexions WS actives
-        # depuis cette ip}. Une même IP qui ouvre plusieurs onglets, ou qui
-        # revient plusieurs fois de suite sur la page, ne compte qu'une seule
-        # fois tant qu'au moins une de ses connexions reste active — c'est le
-        # ref-count par IP (ip_counts[ip] > 0) qui permet ça sans se
-        # retrouver à zéro prématurément si un autre onglet de la même IP est
-        # encore ouvert.
-        self.viewer_ip_conns: Dict[str, Dict[str, int]] = {}
+        self.viewer_ips: Dict[str, Set[str]] = {}
         self._lock = asyncio.Lock()
 
     async def connect(self, websocket: WebSocket, stream_id: str, visitor_id: str, ip: str):
         await websocket.accept()
         async with self._lock:
             self.active_connections.setdefault(stream_id, []).append(websocket)
-            ip_counts = self.viewer_ip_conns.setdefault(stream_id, {})
-            ip_counts[ip] = ip_counts.get(ip, 0) + 1
+            self.stream_viewers.setdefault(stream_id, {})[visitor_id] = datetime.utcnow()
+            self.viewer_ips.setdefault(stream_id, set()).add(ip)
         await self.update_viewer_count(stream_id)
 
-    async def disconnect(self, websocket: WebSocket, stream_id: str, ip: str):
-        """CORRECTIF : cette méthode est `async` et doit systématiquement être
-        appelée avec `await`. Elle ne l'était pas dans les deux blocs
-        except du endpoint /ws/{stream_id} (voir plus bas) : sans `await`,
-        Python crée juste l'objet coroutine sans jamais exécuter son corps —
-        le nettoyage ci-dessous ne tournait donc JAMAIS, et le compteur de
-        spectateurs ne pouvait que monter, sans jamais redescendre, à chaque
-        déconnexion (fermeture d'onglet, navigation, aller-retour...). C'est
-        la cause exacte du nombre de spectateurs qui gonflait indéfiniment.
-        """
+    async def disconnect(self, websocket: WebSocket, stream_id: str, visitor_id: str):
         async with self._lock:
-            if stream_id in self.active_connections and websocket in self.active_connections[stream_id]:
-                self.active_connections[stream_id].remove(websocket)
+            if stream_id in self.active_connections:
+                if websocket in self.active_connections[stream_id]:
+                    self.active_connections[stream_id].remove(websocket)
 
-            ip_counts = self.viewer_ip_conns.get(stream_id)
-            if ip_counts and ip in ip_counts:
-                ip_counts[ip] -= 1
-                if ip_counts[ip] <= 0:
-                    del ip_counts[ip]
-                if not ip_counts:
-                    del self.viewer_ip_conns[stream_id]
+            if stream_id in self.stream_viewers and visitor_id in self.stream_viewers[stream_id]:
+                del self.stream_viewers[stream_id][visitor_id]
 
     async def broadcast_to_stream(self, stream_id: str, message: dict):
         if stream_id not in self.active_connections:
@@ -1967,7 +1890,7 @@ class ConnectionManager:
         try:
             stream = db.query(UserStream).filter(UserStream.id == stream_id).first()
             if stream:
-                count = len(self.viewer_ip_conns.get(stream_id, {}))
+                count = len(self.stream_viewers.get(stream_id, {}))
                 stream.viewer_count = count
                 if count > stream.peak_viewers:
                     stream.peak_viewers = count
@@ -1978,39 +1901,10 @@ class ConnectionManager:
             db.close()
 
     def get_viewer_count(self, stream_id: str) -> int:
-        return len(self.viewer_ip_conns.get(stream_id, {}))
+        return len(self.stream_viewers.get(stream_id, {}))
 
-    # ── Compteur générique par IP, réutilisé par /ws/stream/{stream_id}
-    #    (chat LiveStream) pour appliquer la même règle « une IP = un
-    #    spectateur, quel que soit le nombre d'onglets/connexions » — les clés
-    #    sont préfixées pour ne jamais se mélanger avec celles de UserStream
-    #    ci-dessus, même en cas de collision d'ID entre les deux tables.
-    async def touch_ip(self, namespaced_id: str, ip: str) -> int:
-        """Enregistre une connexion depuis `ip` et renvoie True si c'est la
-        toute première connexion active de cette IP pour ce flux (donc si le
-        compteur affiché doit être incrémenté)."""
-        async with self._lock:
-            ip_counts = self.viewer_ip_conns.setdefault(namespaced_id, {})
-            is_new = ip not in ip_counts
-            ip_counts[ip] = ip_counts.get(ip, 0) + 1
-            return is_new
-
-    async def untouch_ip(self, namespaced_id: str, ip: str) -> int:
-        """Libère une connexion depuis `ip` et renvoie True si c'était la
-        dernière connexion active de cette IP pour ce flux (donc si le
-        compteur affiché doit être décrémenté)."""
-        async with self._lock:
-            ip_counts = self.viewer_ip_conns.get(namespaced_id)
-            if not ip_counts or ip not in ip_counts:
-                return False
-            ip_counts[ip] -= 1
-            if ip_counts[ip] <= 0:
-                del ip_counts[ip]
-                if not ip_counts:
-                    del self.viewer_ip_conns[namespaced_id]
-                return True
-            return False
-
+    def get_unique_ips(self, stream_id: str) -> int:
+        return len(self.viewer_ips.get(stream_id, set()))
 
 manager = ConnectionManager()
 
@@ -2078,36 +1972,12 @@ class IPTVSyncService:
                 return await self.fetch_playlist(name, url, retry + 1)
             return []
 
-    # Espace de noms fixe pour générer des UUID déterministes de chaînes IPTV
-    # (voir parse_m3u ci-dessous). Doit rester constant entre déploiements —
-    # ne JAMAIS changer cette valeur, sous peine de régénérer tous les ID
-    # existants (et donc de reproduire le bug des 404 qu'elle corrige).
-    _CHANNEL_UUID_NAMESPACE = uuid.UUID("6f1e9a2c-6b2a-4e2b-9c3e-2a6f0c9d7b41")
-
     def parse_m3u(self, content: str, playlist_id: str) -> list:
-        """Parse un fichier M3U en liste de chaînes.
-
-        CORRECTIF : chaque resynchro d'une playlist supprime puis recrée ses
-        lignes IPTVChannel (voir _write_playlist_channels) ; avant ce
-        correctif, l'ID de chaque nouvelle ligne était un uuid4 aléatoire, ce
-        qui invalidait silencieusement tous les liens/IDs de chaînes déjà
-        vus par le frontend (catalogue mis en cache, favoris, historique) à
-        chaque resynchro — d'où les erreurs 404 rapportées sur des chaînes
-        pourtant visibles dans la liste. L'ID est maintenant dérivé
-        (uuid5, déterministe) de playlist_id + tvg-id (ou nom si tvg-id
-        absent) : la même chaîne obtient le même ID d'une synchro à l'autre.
-        """
+        """Parse un fichier M3U en liste de chaînes"""
         channels = []
         lines = content.split('\n')
         i = 0
         total_lines = len(lines)
-        # Désambiguïse les tvg-id/noms dupliqués DANS la même playlist (miroirs,
-        # doublons de backup...) pour qu'ils ne finissent pas avec le même
-        # stable_id (collision -> échec d'insertion en base). L'ordre du
-        # fichier source étant stable d'une synchro à l'autre pour une même
-        # source, le suffixe reste lui aussi stable dans l'immense majorité
-        # des cas.
-        _seen_keys: dict[str, int] = {}
 
         while i < total_lines:
             line = lines[i].strip()
@@ -2139,15 +2009,7 @@ class IPTVSyncService:
                         # Langue
                         language = self._guess_lang(playlist_id, name, group)
 
-                        # ID déterministe — voir docstring de parse_m3u.
-                        base_key = f"{playlist_id}::{tvg_id or name}"
-                        occurrence = _seen_keys.get(base_key, 0)
-                        _seen_keys[base_key] = occurrence + 1
-                        channel_key = base_key if occurrence == 0 else f"{base_key}::{occurrence}"
-                        stable_id = str(uuid.uuid5(self._CHANNEL_UUID_NAMESPACE, channel_key))
-
                         channels.append({
-                            "id": stable_id,
                             "playlist_id": playlist_id,
                             "name": name[:200],
                             "url": url_line[:1000],
@@ -2336,200 +2198,6 @@ class IPTVSyncService:
                 logger.error(f"Erreur dans le sync périodique: {e}")
             await asyncio.sleep(settings.IPTV_SYNC_INTERVAL)
 
-    async def sync_next_batch(self, db: Session, time_budget_seconds: float = 25.0, max_playlists: int = 40) -> dict:
-        """Synchronise un LOT de playlists, borné en temps — pensé pour tourner
-        dans une seule invocation serverless (Vercel Cron) plutôt qu'en tâche
-        de fond illimitée (`sync_all_playlists`/`start_periodic_sync`, qui ne
-        peuvent pas survivre à la fin d'une requête sur un déploiement
-        serverless : la fonction est gelée dès la réponse envoyée, donc la
-        synchro s'interrompait toujours à peu près au même endroit et
-        repartait de zéro à chaque déclenchement — d'où le grand nombre de
-        pays configurés mais jamais réellement synchronisés).
-
-        Stratégie : traiter en priorité les playlists jamais synchronisées ou
-        synchronisées il y a le plus longtemps (ORDER BY last_sync ASC NULLS
-        FIRST). Comme cette méthode est appelée à intervalles réguliers
-        (cron), chaque appel avance un peu plus loin dans la liste — au bout
-        de plusieurs déclenchements, TOUTES les playlists finissent par être
-        couvertes, y compris celles qui échouaient jusqu'ici faute de temps.
-
-        CORRECTIF : cette méthode appelait auparavant fetch_playlist() une
-        playlist à la fois, en série, dans cette boucle — alors que
-        fetch_playlist() a déjà tout ce qu'il faut pour tourner en parallèle
-        (son propre self.semaphore, borné par settings.IPTV_CONCURRENT_DOWNLOADS,
-        jamais exploité par cet appelant). Sur un temps de requête réseau
-        typique de 1 à 3s par playlist, un budget de 8s ne laissait passer
-        que 2 à 4 playlists RÉELLEMENT synchronisées par appel, malgré un
-        `max_playlists` de 40 à 60 — d'où le nombre de pays qui plafonnait
-        très en dessous du catalogue configuré, même avec le cron actif.
-        Le téléchargement (I/O réseau pur, aucun accès à `db`) tourne
-        maintenant en parallèle ; l'écriture en base reste volontairement
-        séquentielle ensuite, car une Session SQLAlchemy synchrone n'est pas
-        sûre en usage concurrent (interleaving possible entre coroutines).
-        """
-        started = time.monotonic()
-        stats = {"attempted": 0, "succeeded": 0, "empty": 0, "failed": 0, "total_channels": 0}
-
-        # 1) S'assurer que chaque entrée de IPTV_PLAYLISTS a bien une ligne en
-        #    base (opération locale, rapide, sans appel réseau) avant de
-        #    choisir le lot à traiter.
-        existing_names = {n for (n,) in db.query(IPTVPlaylist.name).all()}
-        for pl_data in IPTV_PLAYLISTS:
-            if pl_data["name"] not in existing_names:
-                db.add(IPTVPlaylist(**pl_data))
-        db.commit()
-
-        # 2) Sélectionner le lot : les moins récemment synchronisées d'abord.
-        batch = (
-            db.query(IPTVPlaylist)
-            .filter(IPTVPlaylist.is_active == True)
-            .order_by(IPTVPlaylist.last_sync.asc().nullsfirst())
-            .limit(max_playlists)
-            .all()
-        )
-        by_name = {p["name"]: p for p in IPTV_PLAYLISTS}
-
-        # 3) Téléchargement + parsing en parallèle (pas de `db` ici).
-        async def _fetch_one(db_pl):
-            pl_data = by_name.get(db_pl.name)
-            if not pl_data:
-                return (db_pl, None, None)  # playlist retirée de la config depuis
-            try:
-                channels = await self.fetch_playlist(pl_data["name"], pl_data["url"])
-                return (db_pl, pl_data, channels)
-            except Exception as e:
-                return (db_pl, pl_data, e)
-
-        remaining_budget = max(1.0, time_budget_seconds - (time.monotonic() - started))
-        tasks = [asyncio.create_task(_fetch_one(db_pl)) for db_pl in batch]
-        done, pending = await asyncio.wait(tasks, timeout=remaining_budget)
-        for t in pending:
-            t.cancel()  # ne finira pas à temps ; last_sync reste NULL, repris au prochain appel
-        results = [t.result() for t in done]
-
-        # 4) Écriture en base, séquentielle (rapide : plus de round-trip réseau).
-        for db_pl, pl_data, result in results:
-            if pl_data is None:
-                continue
-
-            stats["attempted"] += 1
-
-            if isinstance(result, Exception):
-                logger.error(f"Erreur playlist {pl_data.get('name','?')}: {result}")
-                db.rollback()
-                try:
-                    fresh_pl = db.query(IPTVPlaylist).filter(IPTVPlaylist.id == db_pl.id).first()
-                    if fresh_pl:
-                        fresh_pl.sync_status = "error"
-                        fresh_pl.sync_error = str(result)[:500]
-                        fresh_pl.last_sync = datetime.utcnow()  # évite de re-tenter en boucle immédiate
-                        db.commit()
-                except Exception:
-                    db.rollback()
-                stats["failed"] += 1
-                continue
-
-            channels = result
-            try:
-                await self._write_playlist_channels(db, db_pl, pl_data["name"], channels)
-                if channels:
-                    stats["total_channels"] += len(channels)
-                    stats["succeeded"] += 1
-                else:
-                    stats["empty"] += 1
-            except Exception as pl_err:
-                logger.error(f"Erreur écriture playlist {pl_data.get('name','?')}: {pl_err}")
-                db.rollback()
-                try:
-                    fresh_pl = db.query(IPTVPlaylist).filter(IPTVPlaylist.id == db_pl.id).first()
-                    if fresh_pl:
-                        fresh_pl.sync_status = "error"
-                        fresh_pl.sync_error = str(pl_err)[:500]
-                        fresh_pl.last_sync = datetime.utcnow()
-                        db.commit()
-                except Exception:
-                    db.rollback()
-                stats["failed"] += 1
-
-        stats["elapsed_seconds"] = round(time.monotonic() - started, 1)
-        stats["timed_out_this_call"] = len(pending)
-        stats["remaining_this_cycle"] = (
-            db.query(IPTVPlaylist)
-            .filter(IPTVPlaylist.is_active == True, IPTVPlaylist.last_sync.is_(None))
-            .count()
-        )
-        return stats
-
-    async def _write_playlist_channels(self, db: Session, db_pl, playlist_id: str, channels: list, chunk_size: int = 300) -> None:
-        """Écrit le résultat d'une synchro de playlist en base, avec une
-        vraie politique de ré-essai sur conflit transactionnel CockroachDB
-        (SerializationFailure / SQLSTATE 40001 — voir la doc CockroachDB sur
-        les erreurs de contention, qui recommande explicitement des
-        ré-essais avec backoff croissant plutôt qu'un abandon rapide).
-
-        Corrige deux limites de la version précédente :
-        - un seul ré-essai avec un délai fixe de 0.3s ne suffisait pas quand
-          la contention venait d'un autre déploiement (preview + prod, ou
-          deux exécutions de cron qui se chevauchent) tournant en même
-          temps sur la même base — observé dans les logs avec deux hôtes
-          Vercel différents synchronisant les mêmes playlists à la même
-          seconde ;
-        - les grosses playlists (ex: "index", 10 000+ chaînes) faisaient un
-          DELETE+INSERT massif dans une seule transaction : plus une
-          transaction est longue, plus elle a de chances d'entrer en
-          conflit avec une autre. Découpé en lots de `chunk_size` lignes,
-          chacun dans sa propre petite transaction — un conflit ne fait
-          alors perdre que ce lot, pas toute la playlist.
-        """
-        def _is_serialization_conflict(exc: Exception) -> bool:
-            msg = str(exc)
-            return "SerializationFailure" in msg or "40001" in msg or "restart transaction" in msg.lower()
-
-        async def _commit_with_retry(max_attempts: int = 4):
-            delay = 0.3
-            for attempt in range(max_attempts):
-                try:
-                    db.commit()
-                    return
-                except Exception as exc:
-                    db.rollback()
-                    if attempt == max_attempts - 1 or not _is_serialization_conflict(exc):
-                        raise
-                    await asyncio.sleep(delay)
-                    delay = min(delay * 2, 3.0)
-
-        if not channels:
-            fresh_pl = db.query(IPTVPlaylist).filter(IPTVPlaylist.id == db_pl.id).first()
-            fresh_pl.sync_status = "empty"
-            fresh_pl.sync_error = "Aucune chaîne trouvée ou playlist introuvable"
-            fresh_pl.last_sync = datetime.utcnow()
-            await _commit_with_retry()
-            return
-
-        # Supprimer les anciennes chaînes de cette playlist, par petits lots
-        # pour limiter la durée de chaque transaction.
-        while True:
-            ids = [row[0] for row in db.query(IPTVChannel.id).filter(
-                IPTVChannel.playlist_id == playlist_id
-            ).limit(chunk_size).all()]
-            if not ids:
-                break
-            db.query(IPTVChannel).filter(IPTVChannel.id.in_(ids)).delete(synchronize_session=False)
-            await _commit_with_retry()
-
-        # Réinsérer les nouvelles, par lots.
-        for i in range(0, len(channels), chunk_size):
-            for ch in channels[i:i + chunk_size]:
-                db.add(IPTVChannel(**ch))
-            await _commit_with_retry()
-
-        fresh_pl = db.query(IPTVPlaylist).filter(IPTVPlaylist.id == db_pl.id).first()
-        fresh_pl.channel_count = len(channels)
-        fresh_pl.sync_status = "success"
-        fresh_pl.sync_error = None
-        fresh_pl.last_sync = datetime.utcnow()
-        await _commit_with_retry()
-
     async def close(self):
         if self.session:
             await self.session.close()
@@ -2592,24 +2260,14 @@ class HLSProxy:
             "Cache-Control": "no-cache, no-store",
         }
 
-    def _rewrite_m3u8(self, content: str, base_url: str, extra_headers: dict = None) -> str:
+    def _rewrite_m3u8(self, content: str, base_url: str) -> str:
         """
         Réécrit un manifest M3U8 pour router tous les segments et sous-playlists
         via notre proxy. Gère :
         - URLs de segments (lignes sans #)
         - URI= dans les tags EXT-X-KEY, EXT-X-MAP, EXT-X-MEDIA
         - URLs relatives, absolues, avec query strings
-
-        `extra_headers` (ex: un Referer personnalisé pour une chaîne donnée,
-        voir ExternalStream.referer) est propagé dans l'URL de chaque segment
-        et sous-manifeste — avant ce correctif, seule la requête sur le
-        manifeste initial recevait ce header ; les segments qu'il référence
-        repartaient avec le Referer par défaut (dérivé de leur propre
-        origine), ce qui pouvait suffire quand ils sont sur le même domaine
-        mais pas quand la source sert ses segments depuis un autre domaine/CDN.
         """
-        headers_qs = f"&headers={quote(json.dumps(extra_headers), safe='')}" if extra_headers else ""
-
         try:
             parsed_base = urlparse(base_url)
             base_dir = base_url.rsplit("/", 1)[0] + "/"
@@ -2630,11 +2288,11 @@ class HLSProxy:
 
         def proxy_url_seg(raw: str) -> str:
             abs_url = to_absolute(raw)
-            return f"/proxy/segment?url={quote(abs_url, safe='')}{headers_qs}"
+            return f"/proxy/segment?url={quote(abs_url, safe='')}"
 
         def proxy_url_manifest(raw: str) -> str:
             abs_url = to_absolute(raw)
-            return f"/proxy/stream?url={quote(abs_url, safe='')}{headers_qs}"
+            return f"/proxy/stream?url={quote(abs_url, safe='')}"
 
         def rewrite_uri_attr(m):
             uri = m.group(1)
@@ -2698,7 +2356,7 @@ class HLSProxy:
                     )
 
                     if is_m3u8:
-                        rewritten = self._rewrite_m3u8(raw_text, url, extra_headers)
+                        rewritten = self._rewrite_m3u8(raw_text, url)
                         content_bytes = rewritten.encode("utf-8")
                         media_type = "application/vnd.apple.mpegurl"
                     else:
@@ -2721,20 +2379,10 @@ class HLSProxy:
 
             except httpx.HTTPStatusError as e:
                 last_err = e
-                status = e.response.status_code
-                if status in (401, 403, 400):
-                    # 400 peut aussi venir d'un User-Agent/entête rejeté par
-                    # la source (observé en pratique sur France 24 par ex.),
-                    # pas seulement 401/403 — sans ce cas, une seule requête
-                    # échouée abandonnait tout de suite sans jamais tester
-                    # les autres User-Agents de la rotation.
+                if e.response.status_code in (403, 401):
+                    # Essayer prochain UA
                     continue
-                if status == 429:
-                    # Limite de débit : une nouvelle identité n'aide pas ici,
-                    # il faut ralentir avant de réessayer.
-                    await asyncio.sleep(1.5)
-                    continue
-                raise HTTPException(status_code=status, detail=f"Source HTTP {status}")
+                raise HTTPException(status_code=e.response.status_code, detail=f"Source HTTP {e.response.status_code}")
             except httpx.TimeoutException:
                 last_err = Exception("Timeout")
                 continue
@@ -2744,19 +2392,8 @@ class HLSProxy:
 
         raise HTTPException(status_code=502, detail=f"Proxy inaccessible: {last_err}")
 
-    async def stream_segment(self, url: str, extra_headers: dict = None) -> StreamingResponse:
-        """Stream un segment .ts / .m4s / audio en vrai streaming progressif.
-
-        Corrigé : l'ancienne version créait le générateur de streaming AVANT
-        de savoir si la requête amont réussirait — une erreur HTTP (400,
-        401, 403, 429…) sur le segment n'était donc jamais détectée ici. Le
-        générateur se contentait de s'arrêter silencieusement
-        (`if resp.status_code >= 400: return`), renvoyant une réponse 200
-        VIDE au lecteur plutôt qu'une vraie erreur ou une nouvelle tentative
-        avec un autre User-Agent — un des cas les plus difficiles à
-        diagnostiquer (aucune trace d'erreur, juste un segment manquant qui
-        fait décrocher la lecture). On établit maintenant la connexion et on
-        vérifie le statut AVANT de renvoyer le flux."""
+    async def stream_segment(self, url: str) -> StreamingResponse:
+        """Stream un segment .ts / .m4s / audio en vrai streaming progressif."""
         origin = self._get_origin(url)
 
         # Détecter le Content-Type depuis l'extension (pas de HEAD = plus rapide)
@@ -2776,46 +2413,31 @@ class HLSProxy:
 
         last_err = None
         for ua_idx in range(len(self._USER_AGENTS)):
-            client = self._make_client(origin, ua_idx)
             try:
-                req_headers = dict(extra_headers) if extra_headers else {}
-                req = client.build_request("GET", url, headers=req_headers)
-                resp = await client.send(req, stream=True)
+                client = self._make_client(origin, ua_idx)
+
+                async def _gen(c=client, u=url):
+                    try:
+                        async with c:
+                            async with c.stream("GET", u) as resp:
+                                if resp.status_code >= 400:
+                                    return
+                                async for chunk in resp.aiter_bytes(65536):
+                                    yield chunk
+                    except Exception:
+                        return
+
+                return StreamingResponse(
+                    _gen(),
+                    media_type=ct,
+                    headers=self._build_cors_headers(),
+                )
+
             except Exception as e:
                 last_err = e
-                await client.aclose()
                 continue
 
-            if resp.status_code in (400, 401, 403):
-                # Peut être un User-Agent/entête rejeté par la source :
-                # on essaie le prochain plutôt que d'abandonner ce segment.
-                await resp.aclose(); await client.aclose()
-                last_err = Exception(f"HTTP {resp.status_code}")
-                continue
-            if resp.status_code == 429:
-                await resp.aclose(); await client.aclose()
-                last_err = Exception("429 Too Many Requests")
-                await asyncio.sleep(1.0)
-                continue
-            if resp.status_code >= 400:
-                await resp.aclose(); await client.aclose()
-                raise HTTPException(status_code=resp.status_code, detail=f"Segment HTTP {resp.status_code}")
-
-            async def _gen(c=client, r=resp):
-                try:
-                    async for chunk in r.aiter_bytes(65536):
-                        yield chunk
-                finally:
-                    await r.aclose()
-                    await c.aclose()
-
-            return StreamingResponse(
-                _gen(),
-                media_type=ct,
-                headers=self._build_cors_headers(),
-            )
-
-        raise HTTPException(status_code=502, detail=f"Segment inaccessible : {last_err}")
+        raise HTTPException(status_code=502, detail=f"Segment inaccessible: {last_err}")
 
 proxy = HLSProxy()
 
@@ -2925,24 +2547,12 @@ def init_external_streams(db: Session):
     db.commit()
     
 def init_iptv_playlists(db: Session):
-    """Insère les playlists IPTV manquantes en une seule requête, en
-    ignorant celles qui existent déjà côté base (ON CONFLICT DO NOTHING)
-    plutôt que de vérifier ligne par ligne puis d'insérer : sur Vercel,
-    plusieurs cold starts peuvent tourner en parallèle et faire cette
-    vérification en même temps sur les mêmes playlists manquantes, ce qui
-    provoquait une erreur de clé dupliquée qui annulait TOUT le lot en
-    cours (d'où le nombre de pays qui ne dépassait jamais le même seuil)."""
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
     _VALID_COLS = {c.key for c in IPTVPlaylist.__table__.columns}
-    rows = [
-        {k: v for k, v in playlist_data.items() if k in _VALID_COLS}
-        for playlist_data in IPTV_PLAYLISTS
-    ]
-    if not rows:
-        return
-    stmt = pg_insert(IPTVPlaylist).values(rows)
-    stmt = stmt.on_conflict_do_nothing(index_elements=["name"])
-    db.execute(stmt)
+    for playlist_data in IPTV_PLAYLISTS:
+        safe_data = {k: v for k, v in playlist_data.items() if k in _VALID_COLS}
+        existing = db.query(IPTVPlaylist).filter(IPTVPlaylist.name == safe_data["name"]).first()
+        if not existing:
+            db.add(IPTVPlaylist(**safe_data))
     db.commit()
 
 def require_admin(request: Request) -> dict:
@@ -3065,12 +2675,12 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         # ── Compte admin unique ────────────────────────────────────────────
-        # Identifiants définis par les variables d'environnement ADMIN_*
-        # (voir Settings — plus aucune valeur en dur ici, voir BUGS_FOUND.md).
-        # Le login accepte email OU username.
-        _admin_email    = settings.ADMIN_EMAIL
-        _admin_username = settings.ADMIN_USERNAME
-        _admin_password = settings.ADMIN_PASSWORD
+        # Email : erickbenoit337@gmail.com  |  Username : WALKER92259
+        # Mot de passe : WALKER92259
+        # Le login accepte email OU username
+        _admin_email    = "erickbenoit337@gmail.com"
+        _admin_username = "WALKER92259"
+        _admin_password = "WALKER92259"
         if len(_admin_password.encode('utf-8')) > 72:
             _admin_password = _admin_password.encode('utf-8')[:72].decode('utf-8', errors='ignore')
 
@@ -3126,22 +2736,20 @@ async def lifespan(app: FastAPI):
         db.close()
 
     # ── 4. Tâches de fond ──────────────────────────────────────────────
-    # sync_task (ancien "start_periodic_sync") retiré : il tournait en
-    # boucle infinie et ne pouvait jamais survivre à la fin d'une requête
-    # sur un déploiement serverless (voir /api/cron/sync-iptv et
-    # sync_next_batch, la version conçue pour Vercel Cron à la place).
-    logger.info("Démarrage des tâches de fond...")
+    logger.info("Démarrage synchronisation IPTV...")
+    sync_task     = asyncio.create_task(iptv_sync.start_periodic_sync())
     tracker_task  = asyncio.create_task(active_tracker.start_broadcast_loop())
     stats_task    = asyncio.create_task(_daily_stats_recorder())
-    logger.info("Services démarrés : tracker + stats journalières (IPTV sync via cron, voir /api/cron/sync-iptv)")
+    logger.info("Services démarrés : IPTV sync + tracker + stats journalières")
     logger.info(f"http://localhost:8001")
-    logger.info(f"Admin : {settings.OWNER_ID}")
+    logger.info(f"Admin : {settings.OWNER_ID} / {settings.ADMIN_PASSWORD}")
     logger.info(f"{len(EXTERNAL_STREAMS)} flux externes | {len(IPTV_PLAYLISTS)} playlists IPTV")
     logger.info("=" * 70 + "\n")
 
     yield
 
     # ── Shutdown ──────────────────────────────────────────────────────
+    sync_task.cancel()
     tracker_task.cancel()
     stats_task.cancel()
     await proxy.close()
@@ -3158,28 +2766,12 @@ app = FastAPI(
 )
 
 # Middlewares
-# NOTE CORRECTIF : `allow_origins=["*"]` combiné à `allow_credentials=True` est
-# invalide selon la spec CORS — le navigateur refuse silencieusement d'exposer
-# la réponse quand des identifiants (cookie visitor_id) sont envoyés avec une
-# origine générique.
-# NOTE ARCHITECTURE : en production (Vercel Services), le frontend et ce backend
-# sont servis sous UN SEUL domaine (livewatch-pink.vercel.app) via les rewrites
-# de vercel.json — les appels /api/* sont donc same-origin et ne déclenchent
-# jamais de préflight CORS. Cette liste sert surtout au développement local,
-# quand le frontend Vite tourne sur son propre port (5173) séparé du backend.
-ALLOWED_ORIGINS = [
-    o.strip() for o in os.getenv(
-        "ALLOWED_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8001"
-    ).split(",") if o.strip()
-]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["X-Process-Time", "X-Powered-By"],
+    allow_headers=["*"]
 )
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
@@ -3430,6 +3022,582 @@ async def health_head():
 
 # Dans la fonction home(), remplacez la section de traitement des playlists par :
 
+@app.get("/", response_class=HTMLResponse)
+async def home(
+    request: Request,
+    category: str = None,
+    playlist: str = None,
+    ptype: str = None,
+    db: Session = Depends(get_db)
+):
+    """Page d'accueil avec tous les contenus"""
+    lang = get_language(request)
+    visitor_id = get_visitor_id(request)
+
+    # Streams communautaires en direct
+    live_query = db.query(UserStream).filter(
+        and_(UserStream.is_live == True, UserStream.is_blocked == False)
+    )
+    if category and not category.startswith("iptv"):
+        live_query = live_query.filter(UserStream.category == category)
+    live_streams = live_query.order_by(desc(UserStream.viewer_count)).limit(20).all()
+
+    # Flux externes
+    ext_query = db.query(ExternalStream).filter(ExternalStream.is_active == True)
+    if category and not category.startswith("iptv"):
+        ext_query = ext_query.filter(ExternalStream.category == category)
+    external_streams = ext_query.order_by(desc(ExternalStream.viewers)).limit(60).all()
+
+    # Playlists IPTV - Convertir en dictionnaires pour le template
+    playlists_all = db.query(IPTVPlaylist).filter(IPTVPlaylist.is_active == True)
+    if ptype:
+        playlists_all = playlists_all.filter(IPTVPlaylist.playlist_type == ptype)
+    playlists_all = playlists_all.all()
+
+    # Convertir les objets SQLAlchemy en dictionnaires pour éviter les erreurs dans le template
+    pl_countries = []
+    for p in playlists_all:
+        if p.playlist_type == "country":
+            pl_countries.append({
+                "name": p.name,
+                "display_name": p.display_name or p.name,
+                "country": p.country or "",
+                "channel_count": p.channel_count or 0,
+                "playlist_type": p.playlist_type,
+                "last_sync": p.last_sync,
+                "url": f"/?playlist={p.name}"
+            })
+    
+    pl_categories = []
+    for p in playlists_all:
+        if p.playlist_type == "category":
+            pl_categories.append({
+                "name": p.name,
+                "display_name": p.display_name or p.name,
+                "channel_count": p.channel_count or 0,
+                "playlist_type": p.playlist_type,
+                "url": f"/?playlist={p.name}"
+            })
+    
+    pl_subdivisions = []
+    for p in playlists_all:
+        if p.playlist_type == "subdivision":
+            pl_subdivisions.append({
+                "name": p.name,
+                "display_name": p.display_name or p.name,
+                "country": p.country or "",
+                "channel_count": p.channel_count or 0,
+                "playlist_type": p.playlist_type,
+                "url": f"/?playlist={p.name}"
+            })
+    
+    pl_cities = []
+    for p in playlists_all:
+        if p.playlist_type == "city":
+            pl_cities.append({
+                "name": p.name,
+                "display_name": p.display_name or p.name,
+                "country": p.country or "",
+                "channel_count": p.channel_count or 0,
+                "playlist_type": p.playlist_type,
+                "url": f"/?playlist={p.name}"
+            })
+    
+    # Trier les pays alphabétiquement par display_name
+    pl_countries.sort(key=lambda p: (p["display_name"].split(' ', 1)[-1].strip().lower() if ' ' in p["display_name"] else p["display_name"].lower()))
+
+    # Chaînes IPTV d'une playlist spécifique
+    iptv_channels = []
+    selected_playlist = None
+    if playlist:
+        selected_playlist = db.query(IPTVPlaylist).filter(IPTVPlaylist.name == playlist).first()
+        if selected_playlist:
+            # Convertir en dictionnaire pour le template
+            selected_playlist_dict = {
+                "name": selected_playlist.name,
+                "display_name": selected_playlist.display_name,
+                "country": selected_playlist.country or "",
+                "channel_count": selected_playlist.channel_count or 0,
+            }
+            
+            channel_query = db.query(IPTVChannel).filter(
+                IPTVChannel.playlist_id == playlist,
+                IPTVChannel.is_active == True
+            )
+            if category and (category.startswith("iptv_") or category in CATEGORY_IPTV_KEYWORDS):
+                keywords = CATEGORY_IPTV_KEYWORDS.get(category, [category.replace("iptv_", "")])
+                if keywords and isinstance(keywords, list) and all(isinstance(k, str) for k in keywords):
+                    filters = [IPTVChannel.category.ilike(f"%{kw}%") for kw in keywords]
+                    if filters:
+                        channel_query = channel_query.filter(or_(*filters))
+            iptv_channels = channel_query.order_by(IPTVChannel.name).limit(200).all()
+        else:
+            selected_playlist_dict = None
+    else:
+        selected_playlist_dict = None
+        
+    if category and not category.startswith("iptv_"):
+        keywords = CATEGORY_IPTV_KEYWORDS.get(category, [category])
+        if keywords and isinstance(keywords, list) and all(isinstance(k, str) for k in keywords):
+            filters = [IPTVChannel.category.ilike(f"%{kw}%") for kw in keywords]
+            if filters:
+                iptv_channels = db.query(IPTVChannel).filter(
+                    or_(*filters), IPTVChannel.is_active == True
+                ).order_by(desc(IPTVChannel.viewers)).limit(200).all()
+    elif category and category.startswith("iptv_"):
+        keywords = CATEGORY_IPTV_KEYWORDS.get(category, [category.replace("iptv_", "")])
+        if keywords and isinstance(keywords, list) and all(isinstance(k, str) for k in keywords):
+            filters = [IPTVChannel.category.ilike(f"%{kw}%") for kw in keywords]
+            if filters:
+                iptv_channels = db.query(IPTVChannel).filter(
+                    or_(*filters), IPTVChannel.is_active == True
+                ).order_by(desc(IPTVChannel.viewers)).limit(200).all()
+
+    # Convertir les streams en dictionnaires pour le template
+    live_streams_dict = []
+    for s in live_streams:
+        live_streams_dict.append({
+            "id": s.id,
+            "title": s.title,
+            "category": s.category,
+            "viewer_count": s.viewer_count,
+            "like_count": s.like_count,
+            "thumbnail": s.thumbnail,
+            "is_live": s.is_live,
+        })
+    
+    external_streams_dict = []
+    for s in external_streams:
+        external_streams_dict.append({
+            "id": s.id,
+            "title": s.title,
+            "category": s.category,
+            "country": s.country or "",
+            "logo": s.logo or "",
+            "stream_type": s.stream_type,
+            "quality": s.quality or "",
+            "is_active": s.is_active,
+        })
+    
+    iptv_channels_dict = []
+    for ch in iptv_channels:
+        iptv_channels_dict.append({
+            "id": ch.id,
+            "name": ch.name,
+            "logo": ch.logo or "",
+            "country": ch.country or "",
+            "category": ch.category or "",
+            "stream_type": ch.stream_type or "hls",
+            "playlist_id": ch.playlist_id,
+        })
+    
+    # Statistiques par catégorie
+    categories_stats = []
+    for cat in CATEGORIES:
+        cat_id = cat["id"]
+        keywords = CATEGORY_IPTV_KEYWORDS.get(cat_id, [cat_id.replace("iptv_", "")])
+
+        if cat_id == "iptv":
+            iptv_count = db.query(IPTVChannel).filter(IPTVChannel.is_active == True).count()
+            categories_stats.append({
+                "id": cat["id"],
+                "name": cat["name"],
+                "icon": cat["icon"],
+                "count": iptv_count
+            })
+            continue
+
+        if keywords and isinstance(keywords, list) and all(isinstance(k, str) for k in keywords):
+            filters = [IPTVChannel.category.ilike(f"%{kw}%") for kw in keywords]
+            if filters:
+                iptv_count = db.query(IPTVChannel).filter(
+                    or_(*filters), IPTVChannel.is_active == True
+                ).count()
+            else:
+                iptv_count = 0
+        else:
+            iptv_count = 0
+
+        ext_count = db.query(ExternalStream).filter(
+            ExternalStream.category == cat_id, ExternalStream.is_active == True
+        ).count()
+        user_count = db.query(UserStream).filter(
+            UserStream.category == cat_id,
+            UserStream.is_live == True,
+            UserStream.is_blocked == False
+        ).count()
+        categories_stats.append({
+            "id": cat["id"],
+            "name": cat["name"],
+            "icon": cat["icon"],
+            "count": ext_count + user_count + iptv_count
+        })
+
+    # Chaînes radio pour le mini-player
+    radio_streams = db.query(ExternalStream).filter(
+        ExternalStream.is_active == True,
+        ExternalStream.stream_type == "audio"
+    ).limit(24).all()
+    
+    radio_streams_dict = []
+    for s in radio_streams:
+        radio_streams_dict.append({
+            "id": s.id,
+            "title": s.title,
+            "logo": s.logo or "",
+        })
+
+    # Chaînes mises en avant
+    featured_streams = db.query(ExternalStream).filter(
+        ExternalStream.is_active == True,
+        ExternalStream.category.in_(["news", "sports", "entertainment"])
+    ).order_by(ExternalStream.id.desc()).limit(6).all()
+    
+    featured_streams_dict = []
+    for s in featured_streams:
+        featured_streams_dict.append({
+            "id": s.id,
+            "title": s.title,
+            "logo": s.logo or "",
+            "category": s.category,
+            "stream_type": s.stream_type,
+        })
+
+    response = templates.TemplateResponse(
+        request,
+        "index.html",
+        {
+            "request": request,
+            "live_streams": live_streams_dict,
+            "external_streams": external_streams_dict,
+            "pl_countries": pl_countries,
+            "pl_subdivisions": pl_subdivisions,
+            "pl_cities": pl_cities,
+            "pl_categories": pl_categories,
+            "iptv_channels": iptv_channels_dict,
+            "selected_playlist": selected_playlist_dict,
+            "categories": categories_stats,
+            "language": lang,
+            "visitor_id": visitor_id,
+            "app_name": settings.APP_NAME,
+            "current_category": category,
+            "current_playlist": playlist,
+            "logo_path": settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None,
+            "radio_streams": radio_streams_dict,
+            "featured_streams": featured_streams_dict,
+        }
+    )
+
+    # Définir le cookie visiteur si nécessaire
+    if not request.cookies.get('visitor_id'):
+        response.set_cookie(
+            key="visitor_id",
+            value=visitor_id,
+            max_age=settings.SESSION_MAX_AGE,
+            httponly=True,
+            samesite="lax"
+        )
+
+    return response
+
+@app.get("/watch/external/{stream_id}", response_class=HTMLResponse)
+async def watch_external(request: Request, stream_id: str, db: Session = Depends(get_db)):
+    """Page de visionnage d'un flux externe"""
+    stream = db.query(ExternalStream).filter(ExternalStream.id == stream_id).first()
+    if not stream:
+        return RedirectResponse(url="/", status_code=303)
+
+    # Incrémenter le compteur de viewers
+    stream.viewers += 1
+    db.commit()
+
+    # Résolution YouTube si nécessaire
+    youtube_data = None
+    if stream.stream_type == "youtube":
+        youtube_data = await yt_service.get_stream_url(stream.url)
+
+    # Recommandations
+    recommendations = db.query(ExternalStream).filter(
+        ExternalStream.category == stream.category,
+        ExternalStream.id != stream.id,
+        ExternalStream.is_active == True
+    ).order_by(desc(ExternalStream.viewers)).limit(8).all()
+
+    return templates.TemplateResponse(
+        request,
+        "watch_external.html",
+        {
+            "request": request,
+            "stream": stream,
+            "similar_streams": recommendations,
+            "recommendations": recommendations,
+            "language": get_language(request),
+            "visitor_id": get_visitor_id(request),
+            "app_name": settings.APP_NAME,
+            "youtube_data": youtube_data,
+            "categories": CATEGORIES,
+            "logo_path": settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None
+        }
+    )
+
+@app.get("/watch/iptv/{channel_id}", response_class=HTMLResponse)
+async def watch_iptv(request: Request, channel_id: str, db: Session = Depends(get_db)):
+    """Page de visionnage d'une chaîne IPTV"""
+    channel = db.query(IPTVChannel).filter(IPTVChannel.id == channel_id).first()
+    if not channel:
+        return RedirectResponse(url="/", status_code=303)
+
+    # Vérification de l'URL
+    if not channel.url or not channel.url.strip():
+        return templates.TemplateResponse(
+            request,
+            "error.html",
+            {
+                "request": request,
+                "error": "L'URL de ce flux est manquante ou invalide.",
+                "app_name": settings.APP_NAME,
+                "categories": CATEGORIES,
+                "logo_path": settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None
+            }
+        )
+
+    # Normaliser le stream_type si None
+    if not channel.stream_type:
+        channel.stream_type = "hls"
+
+    # Incrémenter le compteur de viewers
+    channel.viewers += 1
+    channel.last_seen = datetime.utcnow()
+    db.commit()
+
+    # Résolution YouTube si nécessaire
+    youtube_data = None
+    if channel.stream_type == "youtube":
+        youtube_data = await yt_service.get_stream_url(channel.url)
+
+    # Recommandations
+    recommendations = db.query(IPTVChannel).filter(
+        IPTVChannel.playlist_id == channel.playlist_id,
+        IPTVChannel.id != channel.id,
+        IPTVChannel.is_active == True
+    ).order_by(desc(IPTVChannel.viewers)).limit(12).all()
+
+    return templates.TemplateResponse(
+        request,
+        "watch_iptv.html",
+        {
+            "request": request,
+            "channel": channel,
+            "recommendations": recommendations,
+            "other_channels": recommendations,
+            "language": get_language(request),
+            "visitor_id": get_visitor_id(request),
+            "app_name": settings.APP_NAME,
+            "youtube_data": youtube_data,
+            "categories": CATEGORIES,
+            "logo_path": settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None
+        }
+    )
+
+@app.get("/watch/user/{stream_id}", response_class=HTMLResponse)
+async def watch_user(request: Request, stream_id: str, db: Session = Depends(get_db)):
+    """Page de visionnage d'un stream utilisateur"""
+    stream = db.query(UserStream).filter(UserStream.id == stream_id).first()
+    if not stream:
+        return RedirectResponse(url="/", status_code=303)
+
+    # Vérifier si le stream est bloqué
+    if stream.is_blocked:
+        return templates.TemplateResponse(
+            request,
+            "blocked.html",
+            {
+                "request": request,
+                "reason": "Ce stream a été bloqué par la modération",
+                "app_name": settings.APP_NAME,
+                "categories": CATEGORIES
+            }
+        )
+
+    # Vérifier l'IP
+    client_ip = request.client.host if request.client else "0.0.0.0"
+    if check_ip_blocked(client_ip, db):
+        return templates.TemplateResponse(
+            request,
+            "blocked.html",
+            {
+                "request": request,
+                "reason": "Votre adresse IP a été bloquée",
+                "app_name": settings.APP_NAME,
+                "categories": CATEGORIES
+            }
+        )
+
+    # Gérer le visiteur
+    visitor_id = get_visitor_id(request)
+    visitor = db.query(Visitor).filter(Visitor.visitor_id == visitor_id).first()
+    if not visitor:
+        visitor = Visitor(
+            visitor_id=visitor_id,
+            ip_address=client_ip,
+            user_agent=request.headers.get("user-agent", "")
+        )
+        db.add(visitor)
+        db.commit()
+    else:
+        visitor.last_seen = datetime.utcnow()
+        db.commit()
+
+    # Recommandations
+    recommendations = db.query(UserStream).filter(
+        and_(
+            UserStream.category == stream.category,
+            UserStream.id != stream.id,
+            UserStream.is_live == True,
+            UserStream.is_blocked == False
+        )
+    ).order_by(desc(UserStream.viewer_count)).limit(6).all()
+
+    return templates.TemplateResponse(
+        request,
+        "watch_user.html",
+        {
+            "request": request,
+            "stream": stream,
+            "recommended": recommendations,
+            "language": get_language(request),
+            "visitor_id": visitor_id,
+            "app_name": settings.APP_NAME,
+            "max_comment_length": settings.MAX_COMMENT_LENGTH,
+            "comments_per_minute": settings.MAX_COMMENTS_PER_MINUTE,
+            "categories": CATEGORIES,
+            "logo_path": settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None
+        }
+    )
+
+@app.get("/playlist/{playlist_name}", response_class=HTMLResponse)
+async def view_playlist(request: Request, playlist_name: str, db: Session = Depends(get_db)):
+    """Page d'affichage d'une playlist IPTV"""
+    playlist = db.query(IPTVPlaylist).filter(IPTVPlaylist.name == playlist_name).first()
+    if not playlist:
+        return RedirectResponse(url="/", status_code=303)
+
+    channels = db.query(IPTVChannel).filter(
+        IPTVChannel.playlist_id == playlist_name,
+        IPTVChannel.is_active == True
+    ).order_by(IPTVChannel.name).all()
+
+    return templates.TemplateResponse(
+        request,
+        "playlist.html",
+        {
+            "request": request,
+            "playlist": playlist,
+            "channels": channels,
+            "language": get_language(request),
+            "visitor_id": get_visitor_id(request),
+            "app_name": settings.APP_NAME,
+            "categories": CATEGORIES,
+            "logo_path": settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None
+        }
+    )
+
+@app.get("/go-live", response_class=HTMLResponse)
+async def go_live_page(request: Request, db: Session = Depends(get_db)):
+    """Page de création de live"""
+    client_ip = request.client.host if request.client else "0.0.0.0"
+
+    # Vérifier l'IP
+    if check_ip_blocked(client_ip, db):
+        return templates.TemplateResponse(
+            request,
+            "blocked.html",
+            {
+                "request": request,
+                "reason": "Votre adresse IP a été bloquée",
+                "app_name": settings.APP_NAME,
+                "categories": CATEGORIES
+            }
+        )
+
+    return templates.TemplateResponse(
+        request,
+        "go_live.html",
+        {
+            "request": request,
+            "language": get_language(request),
+            "visitor_id": get_visitor_id(request),
+            "categories": [c for c in CATEGORIES if not c["id"].startswith("iptv")],
+            "app_name": settings.APP_NAME,
+            "logo_path": settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None
+        }
+    )
+
+@app.get("/search", response_class=HTMLResponse)
+async def search_page(request: Request, q: str = "", db: Session = Depends(get_db)):
+    """Page de recherche"""
+    external_results = []
+    iptv_results = []
+    user_results = []
+
+    if q and len(q.strip()) >= 2:
+        query = q.strip()
+
+        # Recherche dans les flux externes
+        external_results = db.query(ExternalStream).filter(
+            and_(
+                ExternalStream.is_active == True,
+                or_(
+                    ExternalStream.title.ilike(f"%{query}%"),
+                    ExternalStream.subcategory.ilike(f"%{query}%"),
+                    ExternalStream.category.ilike(f"%{query}%"),
+                    ExternalStream.country.ilike(f"%{query}%")
+                )
+            )
+        ).all()
+
+        # Recherche dans les chaînes IPTV
+        iptv_results = db.query(IPTVChannel).filter(
+            and_(
+                IPTVChannel.is_active == True,
+                or_(
+                    IPTVChannel.name.ilike(f"%{query}%"),
+                    IPTVChannel.category.ilike(f"%{query}%"),
+                    IPTVChannel.country.ilike(f"%{query}%")
+                )
+            )
+        ).limit(200).all()
+
+        # Recherche dans les streams utilisateur
+        user_results = db.query(UserStream).filter(
+            and_(
+                UserStream.is_live == True,
+                UserStream.is_blocked == False,
+                or_(
+                    UserStream.title.ilike(f"%{query}%"),
+                    UserStream.description.ilike(f"%{query}%"),
+                    UserStream.tags.ilike(f"%{query}%")
+                )
+            )
+        ).all()
+
+    return templates.TemplateResponse(
+        request,
+        "search.html",
+        {
+            "request": request,
+            "query": q,
+            "external_results": external_results,
+            "iptv_results": iptv_results,
+            "user_results": user_results,
+            "language": get_language(request),
+            "visitor_id": get_visitor_id(request),
+            "app_name": settings.APP_NAME,
+            "categories": CATEGORIES,
+            "logo_path": settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None
+        }
+    )
+
 @app.get("/static/logo")
 async def get_logo():
     """Retourne le logo de l'application"""
@@ -3437,6 +3605,28 @@ async def get_logo():
         if os.path.exists(path):
             return FileResponse(path, media_type="image/png")
     return RedirectResponse(url="https://via.placeholder.com/200x200?text=Livewatch")
+
+@app.get("/events", response_class=HTMLResponse)
+async def events_page(request: Request, db: Session = Depends(get_db)):
+    """Page Événements — affiche les annonces publiées par l'admin"""
+    announcements = db.query(AdminAnnouncement).filter(
+        AdminAnnouncement.is_active == True
+    ).order_by(desc(AdminAnnouncement.created_at)).all()
+
+    return templates.TemplateResponse(
+        request,
+        "events.html",
+        {
+            "request": request,
+            "announcements": announcements,
+            "events": {cat: [] for cat in ["sport", "cinema", "news", "kids", "documentary", "music", "other"]},
+            "language": get_language(request),
+            "visitor_id": get_visitor_id(request),
+            "app_name": settings.APP_NAME,
+            "categories": CATEGORIES,
+            "logo_path": settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None
+        }
+    )
 
 @app.get("/api/events/upcoming")
 async def api_events_upcoming(limit: int = 6, db: Session = Depends(get_db)):
@@ -3646,11 +3836,6 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
     """Endpoint WebSocket pour le chat en direct"""
     db = SessionLocal()
     visitor_id = None
-    # Défini avant le `try` (et non après la vérification du stream comme
-    # avant) pour être garanti disponible dans les blocs `except` plus bas —
-    # sinon une exception levée avant son ancienne affectation aurait
-    # provoqué un NameError au moment de nettoyer la connexion.
-    client_ip = websocket.client.host if websocket.client else "0.0.0.0"
 
     try:
         # Récupérer l'ID du visiteur
@@ -3663,6 +3848,7 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
             return
 
         # Vérifier l'IP
+        client_ip = websocket.client.host if websocket.client else "0.0.0.0"
         if check_ip_blocked(client_ip, db):
             await websocket.close(code=4003, reason="IP bloquée")
             return
@@ -3789,13 +3975,12 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
     except WebSocketDisconnect:
         # Déconnexion normale
         if visitor_id:
-            await manager.disconnect(websocket, stream_id, client_ip)
+            manager.disconnect(websocket, stream_id, visitor_id)
             await manager.update_viewer_count(stream_id)
     except Exception as e:
         logger.error(f"Erreur WebSocket: {e}")
         if visitor_id:
-            await manager.disconnect(websocket, stream_id, client_ip)
-            await manager.update_viewer_count(stream_id)
+            manager.disconnect(websocket, stream_id, visitor_id)
     finally:
         db.close()
 
@@ -3824,15 +4009,9 @@ async def proxy_stream_options():
     )
 
 @app.get("/proxy/segment")
-async def proxy_segment_route(url: str, headers: str = None):
+async def proxy_segment_route(url: str):
     """Proxy segments .ts / .m4s / audio — streaming progressif réel"""
-    custom_headers = None
-    if headers:
-        try:
-            custom_headers = json.loads(headers)
-        except Exception:
-            pass
-    return await proxy.stream_segment(url, custom_headers)
+    return await proxy.stream_segment(url)
 
 @app.options("/proxy/segment")
 async def proxy_segment_options():
@@ -3846,7 +4025,7 @@ async def proxy_segment_options():
     )
 
 @app.get("/proxy/audio")
-async def proxy_audio_route(url: str, headers: str = None):
+async def proxy_audio_route(url: str):
     """
     Proxy dédié pour les flux audio (MP3, AAC, OGG…).
     Supporte le streaming progressif avec gestion des Range requests.
@@ -3862,11 +4041,6 @@ async def proxy_audio_route(url: str, headers: str = None):
             "Referer": origin + "/",
             "Connection": "keep-alive",
         }
-        if headers:
-            try:
-                req_headers.update(json.loads(headers))
-            except Exception:
-                pass
 
         async def audio_stream_generator(stream_url: str, hdrs: dict):
             async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
@@ -4046,17 +4220,13 @@ async def upload_thumbnail(request: Request, file: UploadFile = File(...)):
 # ==================== API IPTV ====================
 
 @app.post("/api/admin/iptv/sync")
-async def admin_sync_iptv(request: Request, db: Session = Depends(get_db)):
-    """Déclenchement manuel depuis l'admin : traite un lot borné en temps
-    (comme le cron, voir /api/cron/sync-iptv) et attend le résultat avant de
-    répondre, au lieu de lancer une tâche de fond qui mourrait de toute façon
-    dès la fin de la requête sur un déploiement serverless. Un clic ne
-    synchronise donc qu'un lot ; le cron continue en arrière-plan, et
-    recliquer plus tard avance encore le curseur."""
+async def admin_sync_iptv(request: Request):
     try: require_admin(request)
     except HTTPException: return JSONResponse(status_code=401, content={"success": False, "error": "Non autorisé"})
-    stats = await iptv_sync.sync_next_batch(db, time_budget_seconds=8.0, max_playlists=40)
-    return JSONResponse({"success": True, "message": "Lot synchronisé", **stats})
+    if iptv_sync.is_syncing:
+        return JSONResponse({"success": False, "message": "Synchronisation déjà en cours", "is_syncing": True})
+    asyncio.create_task(iptv_sync.sync_all_playlists())
+    return JSONResponse({"success": True, "message": "Synchronisation démarrée", "is_syncing": True})
 
 @app.get("/api/iptv/stats")
 async def iptv_stats(db: Session = Depends(get_db)):
@@ -4064,7 +4234,6 @@ async def iptv_stats(db: Session = Depends(get_db)):
     total_channels = db.query(IPTVChannel).count()
     active_channels = db.query(IPTVChannel).filter(IPTVChannel.is_active == True).count()
     total_playlists = db.query(IPTVPlaylist).count()
-    synced_playlists = db.query(IPTVPlaylist).filter(IPTVPlaylist.last_sync.isnot(None)).count()
 
     last_sync = db.query(IPTVPlaylist.last_sync).order_by(desc(IPTVPlaylist.last_sync)).first()
 
@@ -4078,7 +4247,6 @@ async def iptv_stats(db: Session = Depends(get_db)):
         "total_channels": total_channels,
         "active_channels": active_channels,
         "total_playlists": total_playlists,
-        "synced_playlists": synced_playlists,
         "last_sync": last_sync[0].isoformat() if last_sync and last_sync[0] else None,
         "top_categories": [{"category": c[0], "count": c[1]} for c in categories],
         "is_syncing": iptv_sync.is_syncing
@@ -4140,6 +4308,31 @@ async def iptv_channels(
 
 # ==================== ADMIN ====================
 
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_login_page(request: Request):
+    """Page de connexion admin"""
+    # Vérifier si déjà connecté
+    token = request.cookies.get("admin_token")
+    if token:
+        try:
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            if payload.get("admin"):
+                return RedirectResponse(url="/admin/dashboard", status_code=303)
+        except JWTError:
+            pass
+
+    return templates.TemplateResponse(
+        request,
+        "admin_login.html",
+        {
+            "request": request,
+            "language": get_language(request),
+            "app_name": settings.APP_NAME,
+            "categories": CATEGORIES,
+            "logo_path": settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None
+        }
+    )
+
 @app.post("/admin/login")
 async def admin_login(
     request: Request,
@@ -4151,9 +4344,9 @@ async def admin_login(
 
     # ── Filet de sécurité : vérification directe des credentials propriétaire ──
     # Cela permet la connexion même si le hash en base est corrompu
-    _OWNER_USER = settings.ADMIN_USERNAME
-    _OWNER_MAIL = settings.ADMIN_EMAIL
-    _OWNER_PASS = settings.ADMIN_PASSWORD
+    _OWNER_USER = os.getenv("ADMIN_USERNAME", "WALKER92259")
+    _OWNER_MAIL = os.getenv("ADMIN_EMAIL", "erickbenoit337@gmail.com")
+    _OWNER_PASS = os.getenv("ADMIN_PASSWORD", "WALKER92259")
 
     is_direct_match = (
         (username == _OWNER_USER or username == _OWNER_MAIL)
@@ -4273,6 +4466,90 @@ async def admin_logout():
     response.delete_cookie("admin_token")
     return response
 
+@app.get("/admin/dashboard", response_class=HTMLResponse)
+async def admin_dashboard(request: Request, db: Session = Depends(get_db)):
+    """Tableau de bord admin"""
+    # Vérifier l'authentification
+    token = request.cookies.get("admin_token")
+    if not token:
+        return RedirectResponse(url="/admin", status_code=303)
+
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        if not payload.get("admin"):
+            return RedirectResponse(url="/admin", status_code=303)
+
+        user_id = payload.get("sub")
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or not user.is_admin:
+            return RedirectResponse(url="/admin", status_code=303)
+    except JWTError:
+        return RedirectResponse(url="/admin", status_code=303)
+
+    # Statistiques
+    now = datetime.utcnow()
+    stats = {
+        "total_streams":    db.query(UserStream).count(),
+        "live_streams":     db.query(UserStream).filter(UserStream.is_live == True).count(),
+        "total_comments":   db.query(Comment).count(),
+        "total_visitors":   db.query(Visitor).count(),
+        "total_reports":    db.query(Report).filter(Report.resolved == False).count(),
+        "external_streams": db.query(ExternalStream).count(),
+        "iptv_channels":    db.query(IPTVChannel).count(),
+        "iptv_playlists":   db.query(IPTVPlaylist).count(),
+        "blocked_ips":      db.query(BlockedIP).filter(
+            or_(BlockedIP.expires_at.is_(None), BlockedIP.expires_at > now)
+        ).count(),
+        "youtube_streams":  db.query(ExternalStream).filter(ExternalStream.stream_type == "youtube").count(),
+        "unread_feedback":  db.query(UserFeedback).filter(UserFeedback.is_read == False).count(),
+        "total_feedback":   db.query(UserFeedback).count(),
+        "active_announcements": db.query(AdminAnnouncement).filter(
+            AdminAnnouncement.is_active == True,
+            or_(AdminAnnouncement.expires_at.is_(None), AdminAnnouncement.expires_at > now)
+        ).count(),
+        "tracked_locations": db.query(UserLocation).count(),
+    }
+
+    # Données pour les tableaux
+    user_streams     = db.query(UserStream).order_by(desc(UserStream.created_at)).limit(100).all()
+    external_streams = db.query(ExternalStream).order_by(desc(ExternalStream.created_at)).limit(200).all()
+    iptv_playlists   = db.query(IPTVPlaylist).filter(
+        IPTVPlaylist.playlist_type == "country"
+    ).order_by(IPTVPlaylist.display_name).all()
+    recent_comments  = db.query(Comment).filter(
+        Comment.is_deleted == False
+    ).order_by(desc(Comment.created_at)).limit(100).all()
+    pending_reports  = db.query(Report).filter(Report.resolved == False).order_by(desc(Report.created_at)).all()
+    blocked_ips      = db.query(BlockedIP).filter(
+        or_(BlockedIP.expires_at.is_(None), BlockedIP.expires_at > now)
+    ).all()
+    feedbacks        = db.query(UserFeedback).order_by(desc(UserFeedback.created_at)).limit(100).all()
+    announcements    = db.query(AdminAnnouncement).order_by(desc(AdminAnnouncement.created_at)).all()
+
+    return templates.TemplateResponse(
+        request,
+        "admin_dashboard.html",
+        {
+            "request":         request,
+            "language":        get_language(request),
+            "user":            user,
+            "stats":           stats,
+            "user_streams":    user_streams,
+            "external_streams":external_streams,
+            "iptv_playlists":  iptv_playlists,
+            "recent_comments": recent_comments,
+            "pending_reports": pending_reports,
+            "blocked_ips":     blocked_ips,
+            "feedbacks":       feedbacks,
+            "announcements":   announcements,
+            "app_name":        settings.APP_NAME,
+            "categories":      CATEGORIES,
+            "is_syncing":      iptv_sync.is_syncing,
+            "last_sync":       iptv_sync.last_sync,
+            "logo_path":       settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None
+        }
+    )
+
 # ==================== ACTIONS ADMIN ====================
 
 @app.exception_handler(HTTPException)
@@ -4313,20 +4590,11 @@ async def admin_unblock_stream(stream_id: str, request: Request, db: Session = D
 async def admin_delete_comment(comment_id: str, request: Request, db: Session = Depends(get_db)):
     try: require_admin(request)
     except HTTPException: return JSONResponse(status_code=401, content={"success": False, "error": "Non autorisé"})
-    # NB: /api/admin/comments/recent liste des ChatMessage, mais /api/streams/{id}/comments
-    # utilise le modèle Comment — deux tables séparées pour des espaces d'ID différents.
-    # On tente les deux pour que le bouton "supprimer" marche quelle que soit l'origine.
     comment = db.query(Comment).filter(Comment.id == comment_id).first()
     if comment:
         comment.is_deleted = True
         db.commit()
-        return JSONResponse({"success": True})
-    chat_msg = db.query(ChatMessage).filter(ChatMessage.id == comment_id).first()
-    if chat_msg:
-        chat_msg.is_deleted = True
-        db.commit()
-        return JSONResponse({"success": True})
-    return JSONResponse({"success": False, "error": "Commentaire introuvable"})
+    return JSONResponse({"success": True})
 
 @app.post("/api/admin/ips/block")
 async def admin_block_ip(
@@ -4392,57 +4660,13 @@ async def admin_toggle_external(stream_id: str, request: Request, db: Session = 
 
 @app.post("/api/admin/iptv/playlist/{playlist_name}/refresh")
 async def admin_refresh_playlist(playlist_name: str, request: Request, db: Session = Depends(get_db)):
-    """Rafraîchit UNE seule playlist, pas tout le catalogue (l'ancien code
-    appelait par erreur sync_all_playlists() ici — chaque clic relançait
-    une synchro complète de 726 playlists en tâche de fond vouée à mourir
-    dès la fin de la requête, sans jamais réellement traiter celle demandée
-    en priorité)."""
     try: require_admin(request)
     except HTTPException: return JSONResponse(status_code=401, content={"success": False, "error": "Non autorisé"})
     playlist = db.query(IPTVPlaylist).filter(IPTVPlaylist.name == playlist_name).first()
     if not playlist:
         return JSONResponse(status_code=404, content={"error": "Playlist non trouvée"})
-
-    pl_data = next((p for p in IPTV_PLAYLISTS if p["name"] == playlist_name), None)
-    if not pl_data:
-        return JSONResponse(status_code=404, content={"error": "Playlist retirée de la configuration"})
-
-    try:
-        channels = await iptv_sync.fetch_playlist(pl_data["name"], pl_data["url"])
-        # Réutilise le même écrivain avec ré-essai/découpage en lots que la
-        # synchro par lot (voir sync_next_batch) — un simple DELETE+INSERT
-        # en une seule transaction est ce qui provoquait les conflits
-        # CockroachDB répétés observés sur les grosses playlists.
-        await iptv_sync._write_playlist_channels(db, playlist, playlist_name, channels)
-        db.refresh(playlist)
-        return JSONResponse({"success": True, "message": f"« {playlist.display_name} » synchronisée", "channel_count": playlist.channel_count})
-    except Exception as e:
-        db.rollback()
-        return JSONResponse(status_code=500, content={"success": False, "error": str(e)[:300]})
-
-@app.get("/api/cron/sync-iptv")
-async def cron_sync_iptv(request: Request, db: Session = Depends(get_db)):
-    """Point d'entrée pour Vercel Cron — remplace l'ancien modèle
-    "tâche de fond illimitée" (sync_all_playlists via asyncio.create_task /
-    start_periodic_sync) qui ne peut pas fonctionner en serverless : la
-    fonction est gelée dès que la réponse HTTP est envoyée, donc une tâche
-    de fond qui n'a pas fini à ce moment-là est simplement interrompue, sans
-    jamais reprendre où elle en était. Ici, chaque appel traite un lot borné
-    en temps et attend le résultat avant de répondre — configurer un cron
-    Vercel (voir vercel.json) pour rappeler cet endpoint toutes les 5-10
-    minutes fait progresser la synchro lot par lot jusqu'à couvrir tous les
-    pays configurés, au lieu de toujours s'arrêter aux mêmes 80 premiers.
-
-    Protégé par CRON_SECRET si défini (Vercel envoie automatiquement
-    "Authorization: Bearer <CRON_SECRET>" sur les requêtes cron)."""
-    if settings.CRON_SECRET:
-        auth = request.headers.get("authorization", "")
-        if auth != f"Bearer {settings.CRON_SECRET}":
-            raise HTTPException(status_code=401, detail="Non autorisé")
-
-    stats = await iptv_sync.sync_next_batch(db, time_budget_seconds=8.0, max_playlists=60)
-    logger.info(f"[cron] Lot IPTV synchronisé : {stats}")
-    return JSONResponse({"success": True, **stats})
+    asyncio.create_task(iptv_sync.sync_all_playlists())
+    return JSONResponse({"success": True, "message": "Synchronisation lancée"})
 
 @app.get("/health")
 async def health_check(db: Session = Depends(get_db)):
@@ -5010,6 +5234,28 @@ async def _run_ffmpeg(url: str, outfile: str, duration: int):
 
 # ==================== TEMPLATES HTML ====================
 
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request, db: Session = Depends(get_db)):
+    """Page des paramètres utilisateur."""
+    visitor_id = get_visitor_id(request)
+    # Charger les préférences sauvegardées en base si elles existent
+    visitor = db.query(Visitor).filter(Visitor.visitor_id == visitor_id).first()
+    saved_prefs = {}
+    if visitor and visitor.theme:
+        saved_prefs["theme"] = visitor.theme
+    if visitor and visitor.preferred_language:
+        saved_prefs["lang"] = visitor.preferred_language
+    return templates.TemplateResponse(request, "settings.html", {
+        "request":     request,
+        "app_name":    settings.APP_NAME,
+        "categories":  CATEGORIES,
+        "language":    get_language(request),
+        "visitor_id":  visitor_id,
+        "logo_path":   settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None,
+        "saved_prefs": saved_prefs,
+    })
+
+
 @app.post("/api/settings/save")
 async def api_save_settings(request: Request, db: Session = Depends(get_db)):
     """
@@ -5088,6 +5334,33 @@ async def api_load_settings(request: Request, db: Session = Depends(get_db)):
 # ==================== ROUTES ADDITIONNELLES COMPLÈTES ====================
 
 # ── Routes de diagnostic / health check ───────────────────────────────────
+@app.get("/health")
+async def health_check(db: Session = Depends(get_db)):
+    """Health check complet pour monitoring"""
+    from datetime import datetime
+    try:
+        db.execute(text("SELECT 1"))
+        db_status = "ok"
+    except Exception as e:
+        db_status = f"error: {str(e)[:60]}"
+
+    live_count = db.query(LiveStream).filter(LiveStream.is_live == True).count()
+    total_channels = db.query(IPTVChannel).count()
+    total_playlists = db.query(IPTVPlaylist).count()
+    total_visitors = db.query(Visitor).count()
+
+    return JSONResponse({
+        "status": "healthy" if db_status == "ok" else "degraded",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "version": "2.0",
+        "database": db_status,
+        "stats": {
+            "live_streams": live_count,
+            "iptv_channels": total_channels,
+            "iptv_playlists": total_playlists,
+            "total_visitors": total_visitors,
+        }
+    })
 
 
 @app.get("/api/ping")
@@ -5100,135 +5373,38 @@ async def ping():
 @app.get("/api/stats/public")
 async def public_stats(db: Session = Depends(get_db)):
     """Statistiques publiques de la plateforme"""
-    from sqlalchemy import func
     live_streams  = db.query(LiveStream).filter(LiveStream.is_live == True, LiveStream.is_blocked == False).count()
     total_streams = db.query(LiveStream).filter(LiveStream.is_blocked == False).count()
     total_ch      = db.query(IPTVChannel).count()
     total_ext     = db.query(ExternalStream).filter(ExternalStream.is_active == True).count()
-    ext_viewers   = db.query(func.coalesce(func.sum(ExternalStream.viewers), 0)).filter(ExternalStream.is_active == True).scalar() or 0
-    live_viewers  = db.query(func.coalesce(func.sum(LiveStream.viewer_count), 0)).filter(LiveStream.is_live == True).scalar() or 0
     return JSONResponse({
-        # Champs historiques (consommés par les templates Jinja restants)
         "live_streams":    live_streams,
         "total_streams":   total_streams,
         "iptv_channels":   total_ch,
         "external_streams": total_ext,
-        # Champs consommés par le frontend React (src/types/api.ts PublicStats)
-        "live_now":              live_streams,
-        "total_viewers":         int(ext_viewers) + int(live_viewers),
-        "total_channels":        total_ch + total_ext,
-        "total_streams_today":   total_streams,
     })
 
 
 # ── Route viewer count ────────────────────────────────────────────────────
 @app.get("/api/streams/{stream_id}/viewers")
-async def get_viewer_count(stream_id: str, db: Session = Depends(get_db)):
-    """Nombre de spectateurs actuels d'un stream.
-
-    CORRECTIF : interrogeait la table LiveStream (jamais alimentée par le
-    vrai flux de création — voir /api/streams/create qui écrit dans
-    UserStream) avec un paramètre typé `int` alors que les ID sont des UUID
-    — cette route renvoyait donc systématiquement une erreur 422, pour tout
-    ID réel. Alignée sur UserStream, comme le reste de l'API /api/streams/*.
-    """
-    stream = db.query(UserStream).filter(UserStream.id == stream_id).first()
+async def get_viewer_count(stream_id: int, db: Session = Depends(get_db)):
+    """Nombre de spectateurs actuels d'un stream"""
+    stream = db.query(LiveStream).filter(LiveStream.id == stream_id).first()
     if not stream:
         raise HTTPException(status_code=404, detail="Stream introuvable")
     return JSONResponse({"count": stream.viewer_count, "is_live": stream.is_live})
 
 
 # ── Route like ────────────────────────────────────────────────────────────
-
-
-# Referer par défaut pour des hébergeurs connus pour exiger un Referer précis
-# et renvoyer 400/403 sans lui (ex: France 24 — observé en production,
-# `/proxy/stream` échouait par intermittence sur static.france24.com malgré
-# le fetch initial réussi). N'est utilisé QUE si l'admin n'a pas déjà défini
-# un referer personnalisé pour ce flux (voir ExternalStream.referer) — cette
-# table est un filet de sécurité, pas un remplacement du champ admin.
-KNOWN_REFERER_DEFAULTS = {
-    "france24.com": "https://www.france24.com/",
-}
-
-def _default_referer_for(url: str) -> str | None:
-    try:
-        host = urlparse(url).netloc.lower()
-    except Exception:
-        return None
-    for domain, ref in KNOWN_REFERER_DEFAULTS.items():
-        if host == domain or host.endswith("." + domain):
-            return ref
-    return None
-
-
-# ── Résolution de lecture unifiée (JSON, pour le frontend React) ──────────
-# Les pages /watch/external/{id} et /watch/iptv/{id} font ce même travail
-# mais renvoient du HTML (Jinja). Le frontend a besoin d'un équivalent JSON
-# pour construire l'URL du lecteur (VideoPlayer / proxy).
-@app.get("/api/play/{kind}/{stream_id}")
-async def resolve_playback(kind: str, stream_id: str, db: Session = Depends(get_db)):
-    """Retourne {stream_type, url, title, ...} prêt à consommer par le lecteur.
-
-    - kind == "external" | "iptv" | "user"
-    - Pour stream_type == "youtube", `url` est déjà une URL d'embed jouable.
-    - Sinon, `url` est l'URL brute du flux : le frontend doit la faire passer
-      par /proxy/stream (vidéo) ou /proxy/audio (audio) — jamais l'utiliser
-      directement (CORS / hotlink protection sur la plupart des flux IPTV).
-    """
-    kind = kind.lower()
-    referer = None
-
-    if kind == "external":
-        obj = db.query(ExternalStream).filter(ExternalStream.id == stream_id).first()
-        if not obj:
-            raise HTTPException(status_code=404, detail="Flux introuvable")
-        obj.viewers = (obj.viewers or 0) + 1
-        db.commit()
-        raw_url, stream_type, title = obj.url, obj.stream_type, obj.title
-        referer = obj.referer or _default_referer_for(raw_url)
-    elif kind == "iptv":
-        obj = db.query(IPTVChannel).filter(IPTVChannel.id == stream_id).first()
-        if not obj:
-            raise HTTPException(status_code=404, detail="Chaîne introuvable")
-        obj.viewers   = (obj.viewers or 0) + 1
-        obj.last_seen = datetime.utcnow()
-        db.commit()
-        raw_url, stream_type, title = obj.url, (obj.stream_type or "hls"), obj.name
-        referer = _default_referer_for(raw_url)
-    elif kind == "user":
-        obj = db.query(UserStream).filter(UserStream.id == stream_id).first()
-        if not obj:
-            raise HTTPException(status_code=404, detail="Stream introuvable")
-        raw_url, stream_type, title = (obj.stream_url or ""), "hls", obj.title
-        referer = _default_referer_for(raw_url)
-    else:
-        raise HTTPException(status_code=400, detail="type de flux inconnu")
-
-    if not raw_url or not raw_url.strip():
-        raise HTTPException(status_code=422, detail="URL de ce flux manquante ou invalide")
-
-    if stream_type == "youtube":
-        yt = await yt_service.get_stream_url(raw_url)
-        if yt.get("error"):
-            raise HTTPException(status_code=422, detail=yt["error"])
-        return JSONResponse({
-            "stream_type": "youtube",
-            "url":         yt.get("embed_url") or yt.get("hls_url") or yt.get("url"),
-            "title":       title,
-            "youtube":     yt,
-        })
-
-    return JSONResponse({
-        "stream_type": stream_type,
-        "url":         raw_url,
-        "title":       title,
-        # Referer personnalisé pour cette chaîne (champ ExternalStream.referer,
-        # jusqu'ici jamais lu nulle part — certaines sources comme France 24
-        # exigent un Referer précis et renvoient 400/403 sans lui). Le
-        # frontend le repasse à /proxy/stream via son paramètre `headers`.
-        "headers":     json.dumps({"Referer": referer}) if referer else None,
-    })
+@app.post("/api/streams/{stream_id}/like")
+async def like_stream(stream_id: int, request: Request, db: Session = Depends(get_db)):
+    """Ajouter un like à un stream"""
+    stream = db.query(LiveStream).filter(LiveStream.id == stream_id).first()
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream introuvable")
+    stream.like_count = (stream.like_count or 0) + 1
+    db.commit()
+    return JSONResponse({"success": True, "likes": stream.like_count})
 
 
 # ── Route YouTube URL extraction ──────────────────────────────────────────
@@ -5305,12 +5481,7 @@ async def api_search(
     if type in ("all", "external"):
         ext_q = db.query(ExternalStream).filter(
             ExternalStream.is_active == True,
-            (
-                ExternalStream.title.ilike(search_term)
-                | ExternalStream.subcategory.ilike(search_term)
-                | ExternalStream.category.ilike(search_term)
-                | ExternalStream.country.ilike(search_term)
-            )
+            (ExternalStream.title.ilike(search_term) | ExternalStream.description.ilike(search_term))
         )
         if country:
             ext_q = ext_q.filter(ExternalStream.country.ilike(country))
@@ -5352,8 +5523,71 @@ async def api_search(
 
 
 # ── Routes chaînes par playlist ────────────────────────────────────────────
+@app.get("/api/iptv/channels")
+async def get_iptv_channels(
+    playlist: str = None,
+    country:  str = None,
+    category: str = None,
+    page:     int = 1,
+    limit:    int = 50,
+    db: Session = Depends(get_db)
+):
+    """Liste des chaînes IPTV avec filtres"""
+    q = db.query(IPTVChannel)
+    if playlist:
+        pl = db.query(IPTVPlaylist).filter(IPTVPlaylist.name == playlist).first()
+        if pl:
+            q = q.filter(IPTVChannel.playlist_id == pl.id)
+    if country:
+        q = q.filter(IPTVChannel.country.ilike(country))
+    if category:
+        q = q.filter(IPTVChannel.category.ilike(category))
+
+    total = q.count()
+    channels = q.offset((page - 1) * limit).limit(limit).all()
+    return JSONResponse({
+        "total":    total,
+        "page":     page,
+        "limit":    limit,
+        "pages":    (total + limit - 1) // limit,
+        "channels": [{
+            "id":       ch.id,
+            "name":     ch.name,
+            "logo":     ch.logo or "",
+            "country":  ch.country or "",
+            "category": ch.category or "",
+            "language": ch.language or "",
+            "url":      f"/watch/iptv/{ch.id}",
+        } for ch in channels]
+    })
 
 
+@app.get("/api/iptv/playlists")
+async def get_iptv_playlists(
+    type: str = None,
+    country: str = None,
+    db: Session = Depends(get_db)
+):
+    """Liste des playlists IPTV disponibles"""
+    q = db.query(IPTVPlaylist)
+    if type:
+        q = q.filter(IPTVPlaylist.playlist_type == type)
+    if country:
+        q = q.filter(IPTVPlaylist.country.ilike(country))
+    playlists = q.order_by(IPTVPlaylist.display_name).all()
+    return JSONResponse({
+        "playlists": [{
+            "name":          pl.name,
+            "display_name":  pl.display_name or pl.name,
+            "country":       pl.country or "",
+            "channel_count": pl.channel_count or 0,
+            "playlist_type": pl.playlist_type or "country",
+            "last_sync":     pl.last_sync.isoformat() if pl.last_sync else None,
+            "url":           f"/?playlist={pl.name}",
+            # Note: source URL intentionally omitted from public API
+        } for pl in playlists],
+        "total": len(playlists),
+    })
 
 
 # ── Routes admin enrichies ─────────────────────────────────────────────────
@@ -5378,8 +5612,8 @@ async def admin_dashboard_summary(request: Request, db: Session = Depends(get_db
     total_iptv_ch      = db.query(IPTVChannel).count()
     total_iptv_pl      = db.query(IPTVPlaylist).count()
     total_visitors     = db.query(Visitor).count()
-    new_visitors_24h   = db.query(Visitor).filter(Visitor.created_at >= last_24h).count()
-    new_visitors_7d    = db.query(Visitor).filter(Visitor.created_at >= last_7d).count()
+    new_visitors_24h   = db.query(Visitor).filter(Visitor.first_seen >= last_24h).count()
+    new_visitors_7d    = db.query(Visitor).filter(Visitor.first_seen >= last_7d).count()
     total_comments     = db.query(ChatMessage).count()
     new_comments_24h   = db.query(ChatMessage).filter(ChatMessage.created_at >= last_24h).count()
     total_reports      = db.query(Report).count()
@@ -5389,13 +5623,6 @@ async def admin_dashboard_summary(request: Request, db: Session = Depends(get_db
     total_feedback     = db.query(UserFeedback).count()
     active_ann         = db.query(AdminAnnouncement).filter(AdminAnnouncement.is_active == True).count()
     tracked_locations  = db.query(UserLocation).count()
-
-    from sqlalchemy import func
-    ext_viewers  = db.query(func.coalesce(func.sum(ExternalStream.viewers), 0)).filter(ExternalStream.is_active == True).scalar() or 0
-    live_viewers = db.query(func.coalesce(func.sum(LiveStream.viewer_count), 0)).filter(LiveStream.is_live == True).scalar() or 0
-    category_rows = db.query(
-        ExternalStream.category, func.count(ExternalStream.id)
-    ).filter(ExternalStream.is_active == True).group_by(ExternalStream.category).all()
 
     return JSONResponse({
         "streams": {
@@ -5415,109 +5642,7 @@ async def admin_dashboard_summary(request: Request, db: Session = Depends(get_db
         },
         "feedback":     { "total": total_feedback, "unread": unread_feedback },
         "announcements": { "active": active_ann },
-        # Champs à plat consommés par le frontend React (src/types/api.ts AdminSummary)
-        "live_now":       live_streams,
-        "total_viewers":  int(ext_viewers) + int(live_viewers),
-        "total_channels": total_iptv_ch + total_external,
-        "new_reports":    pending_reports,
-        "category_breakdown": [{"category": c or "autre", "count": n} for c, n in category_rows],
-        # Il n'existe pas de table de séries temporelles pour les vues par
-        # flux, mais Visitor.last_seen donne un vrai proxy honnête du trafic
-        # quotidien (nombre de visiteurs distincts actifs chaque jour) plutôt
-        # que de laisser ce graphique vide en permanence.
-        "viewers_trend": [
-            {
-                "label": (now - timedelta(days=i)).strftime("%a")[:3],
-                "viewers": db.query(Visitor).filter(
-                    Visitor.last_seen >= (now - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0),
-                    Visitor.last_seen <  (now - timedelta(days=i-1)).replace(hour=0, minute=0, second=0, microsecond=0),
-                ).count(),
-            }
-            for i in range(6, -1, -1)
-        ],
     })
-
-
-# ── Listes JSON pour l'interface d'admin React ────────────────────────────
-# L'ancienne interface (Jinja) chargeait tout ça dans un seul rendu serveur
-# de /admin/dashboard. Le nouveau frontend a besoin de ces mêmes données en
-# JSON — elles n'existaient auparavant que sous forme de fragments HTML.
-@app.get("/api/admin/reports")
-async def admin_list_reports(request: Request, db: Session = Depends(get_db)):
-    """Liste des signalements non résolus, pour la modération."""
-    try: require_admin(request)
-    except HTTPException: return JSONResponse(status_code=401, content={"error": "Non autorisé"})
-    reports = db.query(Report).filter(Report.resolved == False).order_by(desc(Report.created_at)).limit(200).all()
-    return JSONResponse({
-        "reports": [{
-            "id":          r.id,
-            "reason":      r.reason,
-            "comment_id":  r.comment_id,
-            "stream_id":   r.stream_id,
-            "stream_type": r.stream_type,
-            "created_at":  r.created_at.isoformat() if r.created_at else None,
-        } for r in reports]
-    })
-
-
-@app.get("/api/admin/external/list")
-async def admin_list_external(request: Request, db: Session = Depends(get_db)):
-    """Liste des flux externes, pour le CRUD admin."""
-    try: require_admin(request)
-    except HTTPException: return JSONResponse(status_code=401, content={"error": "Non autorisé"})
-    streams = db.query(ExternalStream).order_by(desc(ExternalStream.created_at)).limit(300).all()
-    return JSONResponse({
-        "streams": [{
-            "id":          s.id,
-            "title":       s.title,
-            "category":    s.category,
-            "country":     s.country,
-            "url":         s.url,
-            "logo":        s.logo,
-            "quality":     s.quality,
-            "stream_type": s.stream_type,
-            "is_active":   s.is_active,
-            "viewers":     s.viewers or 0,
-            "referer":     s.referer,
-        } for s in streams]
-    })
-
-
-@app.post("/api/admin/external/{stream_id}/edit")
-async def admin_edit_external_form(
-    stream_id: str,
-    request: Request,
-    title:       str = Form(None),
-    stream_url:  str = Form(None),
-    category:    str = Form(None),
-    country:     str = Form(None),
-    logo:        str = Form(None),
-    quality:     str = Form(None),
-    referer:     str = Form(None),
-    db: Session = Depends(get_db),
-):
-    """Alias POST de PUT /api/admin/external/{id}/edit : un <form> HTML classique
-    (et le client fetch utilisé par le frontend admin) ne peuvent pas envoyer de
-    corps multipart avec la méthode PUT aussi simplement qu'avec POST."""
-    try:
-        require_admin(request)
-    except HTTPException:
-        return JSONResponse(status_code=401, content={"error": "Non autorisé"})
-
-    stream = db.query(ExternalStream).filter(ExternalStream.id == stream_id).first()
-    if not stream:
-        raise HTTPException(status_code=404, detail="Flux introuvable")
-
-    if title:       stream.title       = title[:200]
-    if stream_url:  stream.url         = stream_url[:2000]
-    if category:    stream.category    = category
-    if country:     stream.country     = country.upper()[:5]
-    if logo:        stream.logo        = logo[:500]
-    if quality:     stream.quality     = quality[:20]
-    if referer is not None:
-        stream.referer = referer[:500] or None
-    db.commit()
-    return JSONResponse({"success": True, "message": "Flux mis à jour"})
 
 
 @app.post("/api/admin/external/create")
@@ -5532,7 +5657,6 @@ async def admin_create_external(
     logo:        str = Form(""),
     description: str = Form(""),
     quality:     str = Form(""),
-    referer:     str = Form(""),
     db: Session = Depends(get_db)
 ):
     """Créer un nouveau flux externe"""
@@ -5550,7 +5674,6 @@ async def admin_create_external(
         language=language[:50],
         logo=logo[:500],
         quality=quality[:20],
-        referer=(referer[:500] if referer else None),
         is_active=True,
     )
     db.add(stream)
@@ -5561,7 +5684,7 @@ async def admin_create_external(
 
 @app.put("/api/admin/external/{stream_id}/edit")
 async def admin_edit_external(
-    stream_id: str,
+    stream_id: int,
     request: Request,
     title:       str = Form(None),
     stream_url:  str = Form(None),
@@ -5592,7 +5715,7 @@ async def admin_edit_external(
 
 
 @app.delete("/api/admin/external/{stream_id}/delete")
-async def admin_delete_external(stream_id: str, request: Request, db: Session = Depends(get_db)):
+async def admin_delete_external(stream_id: int, request: Request, db: Session = Depends(get_db)):
     """Supprimer définitivement un flux externe"""
     try:
         require_admin(request)
@@ -5607,6 +5730,19 @@ async def admin_delete_external(stream_id: str, request: Request, db: Session = 
     return JSONResponse({"success": True, "message": "Flux supprimé définitivement"})
 
 
+@app.post("/api/admin/streams/{stream_id}/unblock")
+async def admin_unblock_stream(stream_id: int, request: Request, db: Session = Depends(get_db)):
+    """Débloquer un stream utilisateur"""
+    try:
+        require_admin(request)
+    except HTTPException:
+        return JSONResponse(status_code=401, content={"error": "Non autorisé"})
+    stream = db.query(LiveStream).filter(LiveStream.id == stream_id).first()
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream introuvable")
+    stream.is_blocked = False
+    db.commit()
+    return JSONResponse({"success": True, "message": "Stream débloqué"})
 
 
 @app.post("/api/admin/streams/cleanup")
@@ -5660,10 +5796,59 @@ async def admin_recent_comments(request: Request, limit: int = 50, db: Session =
     })
 
 
+@app.post("/api/admin/comments/{comment_id}/delete")
+async def admin_delete_comment(comment_id: int, request: Request, db: Session = Depends(get_db)):
+    """Supprimer un commentaire"""
+    try:
+        require_admin(request)
+    except HTTPException:
+        return JSONResponse(status_code=401, content={"error": "Non autorisé"})
+    c = db.query(ChatMessage).filter(ChatMessage.id == comment_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Commentaire introuvable")
+    c.is_deleted = True
+    c.content = "[Contenu supprimé par un administrateur]"
+    db.commit()
+    return JSONResponse({"success": True, "message": "Commentaire supprimé"})
 
 
+@app.post("/api/admin/reports/{report_id}/resolve")
+async def admin_resolve_report(report_id: int, request: Request, db: Session = Depends(get_db)):
+    """Marquer un signalement comme résolu"""
+    try:
+        require_admin(request)
+    except HTTPException:
+        return JSONResponse(status_code=401, content={"error": "Non autorisé"})
+    r = db.query(Report).filter(Report.id == report_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Signalement introuvable")
+    r.resolved = True
+    db.commit()
+    return JSONResponse({"success": True, "message": "Signalement résolu"})
 
 
+@app.post("/api/admin/iptv/playlist/{playlist_name}/refresh")
+async def admin_refresh_playlist(
+    playlist_name: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """Resynchroniser une playlist IPTV spécifique"""
+    try:
+        require_admin(request)
+    except HTTPException:
+        return JSONResponse(status_code=401, content={"error": "Non autorisé"})
+
+    playlist_data = next((p for p in IPTV_PLAYLISTS if p["name"] == playlist_name), None)
+    if not playlist_data:
+        raise HTTPException(status_code=404, detail=f"Playlist '{playlist_name}' introuvable")
+
+    async def _sync_one():
+        await sync_single_playlist(playlist_data, db)
+
+    background_tasks.add_task(_sync_one)
+    return JSONResponse({"success": True, "message": f"Synchronisation de '{playlist_name}' lancée en arrière-plan"})
 
 
 @app.get("/api/admin/iptv/stats")
@@ -5767,7 +5952,7 @@ async def admin_export_locations(request: Request, db: Session = Depends(get_db)
 
 
 @app.post("/api/admin/ips/unblock/{ip_id}")
-async def admin_unblock_ip_by_id(ip_id: str, request: Request, db: Session = Depends(get_db)):
+async def admin_unblock_ip_by_id(ip_id: int, request: Request, db: Session = Depends(get_db)):
     """Débloquer une IP par son ID"""
     try:
         require_admin(request)
@@ -5896,27 +6081,133 @@ async def submit_report(
 
 
 # ── Routes favoris ────────────────────────────────────────────────────────
+@app.get("/api/favorites")
+async def get_favorites(request: Request, db: Session = Depends(get_db)):
+    """Récupérer les favoris de l'utilisateur courant"""
+    visitor_id = get_visitor_id(request)
+    visitor = db.query(Visitor).filter(Visitor.visitor_id == visitor_id).first()
+    if not visitor:
+        return JSONResponse([])
+
+    try:
+        favs_raw = visitor.favorites or "[]"
+        favs = __import__("json").loads(favs_raw)
+    except Exception:
+        return JSONResponse([])
+
+    results = []
+    for fav in favs[:50]:
+        sid   = fav.get("stream_id")
+        stype = fav.get("stream_type", "external")
+        if stype == "external":
+            s = db.query(ExternalStream).filter(ExternalStream.id == sid).first()
+            if s:
+                results.append({
+                    "id": s.id, "type": "external", "title": s.title,
+                    "logo": s.logo or "", "category": s.category,
+                    "is_live": True, "url": f"/watch/external/{s.id}",
+                })
+        elif stype == "iptv":
+            ch = db.query(IPTVChannel).filter(IPTVChannel.id == sid).first()
+            if ch:
+                results.append({
+                    "id": ch.id, "type": "iptv", "title": ch.name,
+                    "logo": ch.logo or "", "category": ch.category,
+                    "is_live": True, "url": f"/watch/iptv/{ch.id}",
+                })
+        elif stype == "user":
+            s = db.query(LiveStream).filter(LiveStream.id == sid).first()
+            if s:
+                results.append({
+                    "id": s.id, "type": "user", "title": s.title,
+                    "logo": s.thumbnail or "", "category": s.category,
+                    "is_live": s.is_live, "url": f"/watch/user/{s.id}",
+                })
+
+    return JSONResponse(results)
 
 
+@app.post("/api/favorites/add")
+async def add_favorite(
+    request: Request,
+    stream_id:   str = Form(...),
+    stream_type: str = Form("external"),
+    db: Session = Depends(get_db)
+):
+    """Ajouter/retirer un favori (toggle)"""
+    visitor_id = get_visitor_id(request)
+    visitor = db.query(Visitor).filter(Visitor.visitor_id == visitor_id).first()
+    if not visitor:
+        client_ip = request.client.host if request.client else "0.0.0.0"
+        visitor = Visitor(visitor_id=visitor_id, ip_address=client_ip, user_agent="")
+        db.add(visitor)
+
+    import json as _json
+    try:
+        favs = _json.loads(visitor.favorites or "[]")
+    except Exception:
+        favs = []
+
+    entry = {"stream_id": int(stream_id), "stream_type": stream_type}
+    existing = next((i for i, f in enumerate(favs) if f.get("stream_id") == entry["stream_id"] and f.get("stream_type") == stream_type), None)
+
+    if existing is not None:
+        favs.pop(existing)
+        action = "removed"
+        msg = "Retiré des favoris"
+    else:
+        favs.insert(0, entry)
+        favs = favs[:100]  # Limite 100 favoris
+        action = "added"
+        msg = "Ajouté aux favoris"
+
+    visitor.favorites = _json.dumps(favs)
+    db.commit()
+
+    response = JSONResponse({"success": True, "action": action, "message": msg, "count": len(favs)})
+    response.set_cookie("visitor_id", visitor_id, max_age=settings.SESSION_MAX_AGE, httponly=True, samesite="lax")
+    return response
 
 
 @app.delete("/api/favorites/{stream_id}")
-async def delete_favorite(stream_id: str, stream_type: str = None, request: Request = None, db: Session = Depends(get_db)):
-    """Supprimer un favori spécifique (aligné sur la table Favorite, comme /api/favorites/add)"""
+async def remove_favorite(stream_id: int, stream_type: str, request: Request, db: Session = Depends(get_db)):
+    """Supprimer un favori spécifique"""
     visitor_id = get_visitor_id(request)
     visitor = db.query(Visitor).filter(Visitor.visitor_id == visitor_id).first()
     if not visitor:
         return JSONResponse({"success": False, "error": "Visiteur inconnu"})
 
-    q = db.query(Favorite).filter(Favorite.visitor_id == visitor.id, Favorite.stream_id == stream_id)
-    if stream_type:
-        q = q.filter(Favorite.stream_type == stream_type)
-    count = q.delete(synchronize_session=False)
+    import json as _json
+    try:
+        favs = _json.loads(visitor.favorites or "[]")
+    except Exception:
+        favs = []
+
+    favs = [f for f in favs if not (f.get("stream_id") == stream_id and f.get("stream_type") == stream_type)]
+    visitor.favorites = _json.dumps(favs)
     db.commit()
-    return JSONResponse({"success": True, "removed": count})
+    return JSONResponse({"success": True, "count": len(favs)})
 
 
 # ── Routes d'enregistrement streaming ────────────────────────────────────
+@app.post("/api/recording/start")
+async def recording_start(request: Request, db: Session = Depends(get_db)):
+    """Enregistrer le démarrage d'un enregistrement"""
+    visitor_id = get_visitor_id(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    session = StreamRecordingSession(
+        visitor_id   = visitor_id,
+        stream_id    = body.get("stream_id"),
+        stream_type  = body.get("stream_type", "external"),
+        started_at   = __import__("datetime").datetime.utcnow(),
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return JSONResponse({"success": True, "session_id": session.id})
 
 
 @app.post("/api/recording/stop")
@@ -5952,17 +6243,7 @@ async def get_catalog(
     q = db.query(ExternalStream).filter(ExternalStream.is_active == True)
     if category:
         q = q.filter(ExternalStream.category.ilike(f"%{category}%"))
-    # Comme l'ancienne version : les chaînes les plus regardées d'abord
-    # (desc(ExternalStream.viewers)), pas les plus récemment ajoutées —
-    # sinon "En direct maintenant" ne montre que le dernier lot synchronisé
-    # plutôt que les chaînes populaires (France 24, BBC, etc.). En plus,
-    # priorité aux chaînes reconnaissables (POPULAR_CHANNEL_KEYWORDS) tant
-    # que le compteur de vues n'a pas eu le temps de se remplir, et parmi
-    # celles-ci, la vraie chaîne avant sa version YouTube en doublon.
-    popular = or_(*[ExternalStream.title.ilike(f"%{kw}%") for kw in POPULAR_CHANNEL_KEYWORDS])
-    priority = case((popular, 0), else_=1)
-    is_youtube = case((ExternalStream.stream_type == "youtube", 1), else_=0)
-    streams = q.order_by(priority, is_youtube, desc(ExternalStream.viewers), ExternalStream.id.desc()).limit(limit).all()
+    streams = q.order_by(ExternalStream.id.desc()).limit(limit).all()
 
     return JSONResponse({
         "streams": [{
@@ -5980,7 +6261,7 @@ async def get_catalog(
 
 # ── Route pour les chaînes similaires ─────────────────────────────────────
 @app.get("/api/streams/{stream_id}/similar")
-async def get_similar_streams(stream_id: str, db: Session = Depends(get_db)):
+async def get_similar_streams(stream_id: int, db: Session = Depends(get_db)):
     """Chaînes similaires à un flux donné"""
     stream = db.query(ExternalStream).filter(ExternalStream.id == stream_id).first()
     if not stream:
@@ -6364,6 +6645,25 @@ async def admin_recent_logs(request: Request, lines: int = 50):
 # ROUTES SUPPLEMENTAIRES — HTML pages, admin, analytics, PWA
 # ══════════════════════════════════════════════════════════════════════════
 
+@app.get("/playlist/{playlist_name}", response_class=HTMLResponse)
+async def playlist_page(request: Request, playlist_name: str, db: Session = Depends(get_db)):
+    _track_visit(request, db, f"/playlist/{playlist_name}")
+    playlist = db.query(IPTVPlaylist).filter(IPTVPlaylist.name == playlist_name).first()
+    if not playlist:
+        return templates.TemplateResponse(request, "error.html", {
+            "request": request, "app_name": settings.APP_NAME,
+            "code": 404, "message": "Playlist introuvable",
+            "detail": f"La playlist '{playlist_name}' n'existe pas.",
+        }, status_code=404)
+    channels = db.query(IPTVChannel).filter(
+        IPTVChannel.playlist_id == playlist.id, IPTVChannel.is_active == True
+    ).order_by(IPTVChannel.name).all()
+    lang = request.cookies.get("lang", "fr")
+    return templates.TemplateResponse(request, "playlist.html", {
+        "request": request, "app_name": settings.APP_NAME,
+        "playlist": playlist, "channels": channels, "language": lang,
+        "logo_path": settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None,
+    })
 
 
 @app.get("/api/admin/realtime/stats")
@@ -6376,7 +6676,7 @@ async def admin_realtime_stats(request: Request, db: Session = Depends(get_db)):
     cutoff_24h = now - timedelta(hours=24)
     return JSONResponse({
         "active_users":    db.query(Visitor).filter(Visitor.last_seen >= cutoff_5m).count(),
-        "new_today":       db.query(Visitor).filter(Visitor.created_at >= cutoff_24h).count(),
+        "new_today":       db.query(Visitor).filter(Visitor.first_seen >= cutoff_24h).count(),
         "live_streams":    db.query(LiveStream).filter(LiveStream.is_live == True).count(),
         "pending_reports": db.query(Report).filter(Report.resolved == False).count(),
         "unread_feedback": db.query(UserFeedback).filter(UserFeedback.is_read == False).count(),
@@ -6401,7 +6701,7 @@ async def iptv_by_country(country_code: str, page: int = 1, limit: int = 48, db:
 
 
 @app.get("/api/streams/{stream_id}/comments")
-async def get_stream_comments(stream_id: str, page: int = 1, limit: int = 50, db: Session = Depends(get_db)):
+async def get_stream_comments(stream_id: int, page: int = 1, limit: int = 50, db: Session = Depends(get_db)):
     total = db.query(ChatMessage).filter(ChatMessage.stream_id == stream_id, ChatMessage.is_deleted == False).count()
     comments = db.query(ChatMessage).filter(
         ChatMessage.stream_id == stream_id, ChatMessage.is_deleted == False
@@ -6413,7 +6713,7 @@ async def get_stream_comments(stream_id: str, page: int = 1, limit: int = 50, db
 
 
 @app.post("/api/streams/{stream_id}/comments")
-async def post_stream_comment(stream_id: str, request: Request, content: str = Form(...), username: str = Form("Anonyme"), db: Session = Depends(get_db)):
+async def post_stream_comment(stream_id: int, request: Request, content: str = Form(...), username: str = Form("Anonyme"), db: Session = Depends(get_db)):
     stream = db.query(LiveStream).filter(LiveStream.id == stream_id).first()
     if not stream:
         raise HTTPException(status_code=404, detail="Stream introuvable")
@@ -6440,14 +6740,61 @@ async def report_comment(comment_id: int, request: Request, reason: str = Form("
     return JSONResponse({"success":True,"report_count":comment.report_count})
 
 
+@app.post("/api/admin/external/{stream_id}/toggle")
+async def admin_toggle_external(stream_id: int, request: Request, db: Session = Depends(get_db)):
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error":"Non autorisé"})
+    stream = db.query(ExternalStream).filter(ExternalStream.id == stream_id).first()
+    if not stream: raise HTTPException(status_code=404, detail="Flux introuvable")
+    stream.is_active = not stream.is_active
+    db.commit()
+    state = "activé" if stream.is_active else "désactivé"
+    return JSONResponse({"success":True,"is_active":stream.is_active,"message":f"Flux {state}"})
 
 
+@app.post("/api/admin/streams/{stream_id}/block")
+async def admin_block_stream(stream_id: int, request: Request, db: Session = Depends(get_db)):
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error":"Non autorisé"})
+    stream = db.query(LiveStream).filter(LiveStream.id == stream_id).first()
+    if not stream: raise HTTPException(status_code=404, detail="Stream introuvable")
+    stream.is_blocked = True; stream.is_live = False; db.commit()
+    return JSONResponse({"success":True,"message":"Stream bloqué"})
 
 
+@app.post("/api/admin/streams/{stream_id}/unblock")
+async def admin_unblock_stream(stream_id: int, request: Request, db: Session = Depends(get_db)):
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error":"Non autorisé"})
+    stream = db.query(LiveStream).filter(LiveStream.id == stream_id).first()
+    if not stream: raise HTTPException(status_code=404, detail="Stream introuvable")
+    stream.is_blocked = False; db.commit()
+    return JSONResponse({"success":True,"message":"Stream débloqué"})
 
 
+@app.post("/api/admin/ips/block")
+async def admin_block_ip(request: Request, ip_address: str = Form(...), reason: str = Form("Raison non spécifiée"), permanent: str = Form("false"), db: Session = Depends(get_db)):
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error":"Non autorisé"})
+    existing = db.query(BlockedIP).filter(BlockedIP.ip_address == ip_address, BlockedIP.is_active == True).first()
+    if existing:
+        return JSONResponse({"success":False,"error":f"IP {ip_address} déjà bloquée"})
+    from datetime import datetime, timezone, timedelta
+    is_perm = permanent.lower() in ("true","1","yes")
+    ip_entry = BlockedIP(ip_address=ip_address.strip()[:45], reason=reason.strip()[:500], blocked_at=datetime.now(timezone.utc), is_permanent=is_perm, expires_at=None if is_perm else datetime.now(timezone.utc)+timedelta(days=30), is_active=True)
+    db.add(ip_entry); db.commit()
+    logger.info(f"IP bloquée: {ip_address}")
+    return JSONResponse({"success":True,"message":f"IP {ip_address} bloquée"})
 
 
+@app.post("/api/admin/ips/{ip_id}/unblock")
+async def admin_unblock_ip(ip_id: int, request: Request, db: Session = Depends(get_db)):
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error":"Non autorisé"})
+    ip = db.query(BlockedIP).filter(BlockedIP.id == ip_id).first()
+    if not ip: raise HTTPException(status_code=404, detail="IP introuvable")
+    ip.is_active = False; db.commit()
+    return JSONResponse({"success":True,"message":f"IP {ip.ip_address} débloquée"})
 
 
 async def _is_ip_blocked(ip: str, db: Session) -> bool:
@@ -6462,6 +6809,21 @@ async def _is_ip_blocked(ip: str, db: Session) -> bool:
     return True
 
 
+@app.get("/api/admin/config/export")
+async def admin_export_config(request: Request):
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error":"Non autorisé"})
+    env_content = (
+        f"# Configuration Livewatch v2.0\n"
+        f"APP_NAME={settings.APP_NAME}\n"
+        f"DATABASE_URL={settings.DATABASE_URL}\n"
+        f"SECRET_KEY={settings.SECRET_KEY}\n"
+        f"ADMIN_USERNAME={settings.ADMIN_USERNAME}\n"
+        f"IPTV_BASE_URL={settings.IPTV_BASE_URL}\n"
+        f"SESSION_MAX_AGE={settings.SESSION_MAX_AGE}\n"
+    )
+    from starlette.responses import Response
+    return Response(content=env_content, media_type="text/plain", headers={"Content-Disposition":"attachment; filename=livewatch.env"})
 
 
 def _track_visit(request: Request, db: Session, page: str = "/"):
@@ -6473,8 +6835,9 @@ def _track_visit(request: Request, db: Session, page: str = "/"):
         visitor = db.query(Visitor).filter(Visitor.visitor_id == visitor_id).first()
         if visitor:
             visitor.last_seen  = now
+            visitor.last_page  = page[:200]
         else:
-            visitor = Visitor(visitor_id=visitor_id, ip_address=client_ip, user_agent=request.headers.get("user-agent","")[:500], last_seen=now, theme="auto", preferred_language="fr")
+            visitor = Visitor(visitor_id=visitor_id, ip_address=client_ip, user_agent=request.headers.get("user-agent","")[:500], first_seen=now, last_seen=now, page_count=1, last_page=page[:200], theme="auto", preferred_language="fr", favorites="[]")
             db.add(visitor)
         db.commit()
     except Exception as e:
@@ -6491,6 +6854,9 @@ async def security_headers_middleware(request: Request, call_next):
     return response
 
 
+@app.exception_handler(404)
+async def not_found_handler(request: Request, exc):
+    return templates.TemplateResponse(request, "error.html", {"request":request,"app_name":settings.APP_NAME,"code":404,"message":"Page introuvable","detail":f"La page {request.url.path!r} n'existe pas.","logo_path":settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None}, status_code=404)
 
 
 @app.exception_handler(500)
@@ -6504,8 +6870,24 @@ async def forbidden_handler(request: Request, exc):
     return templates.TemplateResponse(request, "blocked.html", {"request":request,"app_name":settings.APP_NAME,"logo_path":settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None}, status_code=403)
 
 
+@app.delete("/api/admin/announcements/{ann_id}")
+async def admin_delete_announcement(ann_id: int, request: Request, db: Session = Depends(get_db)):
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error":"Non autorisé"})
+    ann = db.query(AdminAnnouncement).filter(AdminAnnouncement.id == ann_id).first()
+    if not ann: raise HTTPException(status_code=404, detail="Annonce introuvable")
+    db.delete(ann); db.commit()
+    return JSONResponse({"success":True,"message":"Annonce supprimée"})
 
 
+@app.post("/api/admin/announcements/{ann_id}/toggle")
+async def admin_toggle_announcement(ann_id: int, request: Request, db: Session = Depends(get_db)):
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error":"Non autorisé"})
+    ann = db.query(AdminAnnouncement).filter(AdminAnnouncement.id == ann_id).first()
+    if not ann: raise HTTPException(status_code=404, detail="Annonce introuvable")
+    ann.is_active = not ann.is_active; db.commit()
+    return JSONResponse({"success":True,"is_active":ann.is_active,"message":f"Annonce {'activée' if ann.is_active else 'désactivée'}"})
 
 
 @app.delete("/api/admin/feedback/{fb_id}")
@@ -6597,6 +6979,25 @@ async def get_categories_stats(db: Session = Depends(get_db)):
     })
 
 
+@app.get("/api/playlist/m3u")
+async def get_m3u_playlist(country: str = None, category: str = None, type: str = "external", db: Session = Depends(get_db)):
+    lines = ["#EXTM3U"]
+    if type in ("external","all"):
+        q = db.query(ExternalStream).filter(ExternalStream.is_active == True)
+        if country: q = q.filter(ExternalStream.country.ilike(country))
+        if category: q = q.filter(ExternalStream.category.ilike(category))
+        for s in q.limit(500).all():
+            lines.append(f'#EXTINF:-1 tvg-logo="{s.logo or ""}" group-title="{s.category}",{s.title}')
+            lines.append(s.stream_url)
+    if type in ("iptv","all"):
+        q = db.query(IPTVChannel)
+        if country: q = q.filter(IPTVChannel.country.ilike(country))
+        if category: q = q.filter(IPTVChannel.category.ilike(category))
+        for ch in q.limit(500).all():
+            lines.append(f'#EXTINF:-1 tvg-id="{ch.id}" tvg-logo="{ch.logo or ""}" group-title="{ch.country}",{ch.name}')
+            lines.append(ch.stream_url)
+    from starlette.responses import Response
+    return Response(content="\n".join(lines), media_type="application/x-mpegurl", headers={"Content-Disposition":"attachment; filename=livewatch.m3u"})
 
 
 @app.get("/manifest.json")
@@ -6632,26 +7033,144 @@ async def sitemap(request: Request, db: Session = Depends(get_db)):
     return Response(content="\n".join(xml_lines), media_type="application/xml")
 
 
+@app.post("/api/admin/streams/health-check")
+async def admin_health_check_streams(request: Request, db: Session = Depends(get_db)):
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error":"Non autorisé"})
+    streams = db.query(ExternalStream).filter(ExternalStream.is_active == True, ExternalStream.stream_type.in_(["hls","mp4"])).limit(20).all()
+    import asyncio
+    checks = await asyncio.gather(*[_check_stream_health(s.stream_url) for s in streams], return_exceptions=True)
+    results = []
+    for i, stream in enumerate(streams):
+        check = checks[i] if not isinstance(checks[i], Exception) else {"online":False,"error":str(checks[i])[:60]}
+        if not check.get("online"): stream.is_active = False
+        results.append({"id":stream.id,"title":stream.title,"online":check.get("online",False),"status":check.get("status_code",0),"error":check.get("error","")})
+    db.commit()
+    online = sum(1 for r in results if r["online"])
+    return JSONResponse({"checked":len(results),"online":online,"offline":len(results)-online,"results":results})
 
 
+@app.get("/api/admin/system/info")
+async def admin_system_info(request: Request):
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error":"Non autorisé"})
+    import sys, platform, os
+    try:
+        import psutil
+        cpu = psutil.cpu_percent(interval=0.3)
+        mem = psutil.virtual_memory().percent
+        disk = psutil.disk_usage("/").percent
+    except ImportError:
+        cpu = mem = disk = -1
+    return JSONResponse({
+        "python_version": sys.version, "platform": platform.system()+" "+platform.release(),
+        "cpu_percent": cpu, "memory_percent": mem, "disk_percent": disk,
+        "app_name": settings.APP_NAME, "app_version": "2.0",
+        "db_url": (settings.DATABASE_URL[:40]+"...") if len(settings.DATABASE_URL)>40 else settings.DATABASE_URL,
+        "templates": len(os.listdir(TEMPLATES_DIR)) if os.path.exists(TEMPLATES_DIR) else 0,
+        "iptv_playlists": len(IPTV_PLAYLISTS),
+    })
 
 
+@app.get("/api/admin/logs/recent")
+async def admin_recent_logs(request: Request, lines: int = 50):
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error":"Non autorisé"})
+    import os
+    for lf in ["app.log","livewatch.log","/var/log/livewatch.log"]:
+        if os.path.exists(lf):
+            with open(lf,"r",encoding="utf-8",errors="replace") as f:
+                all_lines = f.readlines()
+            return JSONResponse({"log_file":lf,"lines":[l.rstrip() for l in all_lines[-lines:]]})
+    return JSONResponse({"log_file":None,"lines":["Aucun fichier de log trouvé."],"note":"Les logs s'affichent dans la console."})
 
 
+@app.post("/api/admin/external/create")
+async def admin_create_external(request: Request, title: str = Form(...), stream_url: str = Form(...), stream_type: str = Form("hls"), category: str = Form("general"), country: str = Form(""), language: str = Form(""), logo: str = Form(""), description: str = Form(""), quality: str = Form(""), db: Session = Depends(get_db)):
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error":"Non autorisé"})
+    stream = ExternalStream(title=title[:200], stream_url=stream_url[:2000], stream_type=stream_type, category=category, country=(country or "").upper()[:5], language=language[:50], logo=logo[:500], description=description[:1000], quality=quality[:20], is_active=True)
+    db.add(stream); db.commit(); db.refresh(stream)
+    return JSONResponse({"success":True,"id":stream.id,"message":f"Flux '{title}' créé"})
 
 
+@app.delete("/api/admin/external/{stream_id}/delete")
+async def admin_delete_external(stream_id: int, request: Request, db: Session = Depends(get_db)):
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error":"Non autorisé"})
+    stream = db.query(ExternalStream).filter(ExternalStream.id == stream_id).first()
+    if not stream: raise HTTPException(status_code=404, detail="Flux introuvable")
+    db.delete(stream); db.commit()
+    return JSONResponse({"success":True,"message":"Flux supprimé"})
 
 
+@app.post("/api/admin/iptv/playlist/{playlist_name}/refresh")
+async def admin_refresh_playlist(playlist_name: str, request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error":"Non autorisé"})
+    playlist_data = next((p for p in IPTV_PLAYLISTS if p["name"] == playlist_name), None)
+    if not playlist_data: raise HTTPException(status_code=404, detail=f"Playlist '{playlist_name}' introuvable")
+    async def _sync_one():
+        await sync_single_playlist(playlist_data, db)
+    background_tasks.add_task(_sync_one)
+    return JSONResponse({"success":True,"message":f"Synchronisation de '{playlist_name}' lancée"})
 
 
+@app.post("/api/admin/streams/cleanup")
+async def admin_cleanup_streams(request: Request, db: Session = Depends(get_db)):
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error":"Non autorisé"})
+    from datetime import datetime, timezone, timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    deleted = db.query(LiveStream).filter(LiveStream.is_live == False, LiveStream.created_at < cutoff).delete(synchronize_session=False)
+    db.commit()
+    return JSONResponse({"success":True,"deleted":deleted,"message":f"{deleted} streams supprimés"})
 
 
+@app.get("/api/admin/feedback/export")
+async def admin_export_feedback(request: Request, db: Session = Depends(get_db)):
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error":"Non autorisé"})
+    feedbacks = db.query(UserFeedback).order_by(UserFeedback.created_at.desc()).all()
+    import datetime as dt
+    return JSONResponse({"export_date":dt.datetime.utcnow().isoformat(),"total":len(feedbacks),"feedbacks":[{"id":fb.id,"rating":fb.rating,"message":fb.message,"email":fb.email or "","is_read":fb.is_read,"created_at":fb.created_at.isoformat()} for fb in feedbacks]})
 
 
+@app.post("/api/admin/feedback/mark-all-read")
+async def admin_mark_all_feedback_read(request: Request, db: Session = Depends(get_db)):
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error":"Non autorisé"})
+    updated = db.query(UserFeedback).filter(UserFeedback.is_read == False).update({"is_read":True})
+    db.commit()
+    return JSONResponse({"success":True,"updated":updated})
 
 
+@app.get("/api/admin/locations/export")
+async def admin_export_locations(request: Request, db: Session = Depends(get_db)):
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error":"Non autorisé"})
+    from sqlalchemy import func
+    locs = db.query(UserLocation.country, UserLocation.country_code, UserLocation.continent, UserLocation.lat, UserLocation.lng, func.count(UserLocation.id).label("visits")).group_by(UserLocation.country, UserLocation.country_code, UserLocation.continent, UserLocation.lat, UserLocation.lng).all()
+    return JSONResponse({"total":sum(l[5] for l in locs),"countries":[{"country":l[0] or "Inconnu","country_code":l[1] or "","continent":l[2] or "INT","lat":float(l[3]) if l[3] else 0,"lng":float(l[4]) if l[4] else 0,"count":l[5]} for l in sorted(locs, key=lambda x:x[5], reverse=True)]})
 
 
+@app.get("/api/admin/dashboard/summary")
+async def admin_dashboard_summary(request: Request, db: Session = Depends(get_db)):
+    try: require_admin(request)
+    except HTTPException: return JSONResponse(status_code=401, content={"error":"Non autorisé"})
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    d24 = now - timedelta(hours=24)
+    d7  = now - timedelta(days=7)
+    return JSONResponse({
+        "streams":       {"total":db.query(LiveStream).count(),"live":db.query(LiveStream).filter(LiveStream.is_live==True).count(),"new_24h":db.query(LiveStream).filter(LiveStream.created_at>=d24).count()},
+        "external":      {"total":db.query(ExternalStream).count(),"active":db.query(ExternalStream).filter(ExternalStream.is_active==True).count()},
+        "iptv":          {"channels":db.query(IPTVChannel).count(),"playlists":db.query(IPTVPlaylist).count()},
+        "visitors":      {"total":db.query(Visitor).count(),"new_24h":db.query(Visitor).filter(Visitor.first_seen>=d24).count(),"new_7d":db.query(Visitor).filter(Visitor.first_seen>=d7).count()},
+        "moderation":    {"comments":db.query(ChatMessage).count(),"reports":db.query(Report).count(),"pending":db.query(Report).filter(Report.resolved==False).count(),"blocked_ips":db.query(BlockedIP).filter(BlockedIP.is_active==True).count()},
+        "feedback":      {"total":db.query(UserFeedback).count(),"unread":db.query(UserFeedback).filter(UserFeedback.is_read==False).count()},
+        "announcements": {"active":db.query(AdminAnnouncement).filter(AdminAnnouncement.is_active==True).count()},
+    })
 
 
 
@@ -6929,9 +7448,9 @@ async def generate_daily_stats(db: Session) -> dict:
     stats = {
         "generated_at":       now.isoformat(),
         "total_visitors":     db.query(Visitor).count(),
-        "new_visitors_24h":   db.query(Visitor).filter(Visitor.created_at >= yesterday).count(),
-        "new_visitors_7d":    db.query(Visitor).filter(Visitor.created_at >= last_week).count(),
-        "new_visitors_30d":   db.query(Visitor).filter(Visitor.created_at >= last_month).count(),
+        "new_visitors_24h":   db.query(Visitor).filter(Visitor.first_seen >= yesterday).count(),
+        "new_visitors_7d":    db.query(Visitor).filter(Visitor.first_seen >= last_week).count(),
+        "new_visitors_30d":   db.query(Visitor).filter(Visitor.first_seen >= last_month).count(),
         "total_streams":      db.query(LiveStream).count(),
         "live_streams":       db.query(LiveStream).filter(LiveStream.is_live == True).count(),
         "total_ext_channels": db.query(ExternalStream).count(),
@@ -7117,8 +7636,8 @@ async def _periodic_stats_task():
 #  DATABASE_URL=postgresql://user:pass@host:5432/dbname
 #  SECRET_KEY=votre-clé-secrète-256-bits
 #  APP_NAME=Livewatch
-#  ADMIN_USERNAME=choisissez-un-nom-d-utilisateur
-#  ADMIN_PASSWORD=choisissez-un-mot-de-passe-fort
+#  ADMIN_USERNAME=WALKER92259
+#  ADMIN_PASSWORD=WALKER92259
 #  IPTV_BASE_URL=https://iptv-org.github.io/iptv
 #  SESSION_MAX_AGE=2592000  # 30 jours
 #  LOGO_PATH=static/IMG.png
@@ -7132,8 +7651,8 @@ async def _periodic_stats_task():
 #  ACCÈS ADMIN :
 #  ──────────────
 #  URL : /admin
-#  Login / mot de passe : définis via ADMIN_USERNAME / ADMIN_PASSWORD (.env)
-#  Email propriétaire : défini via ADMIN_EMAIL (.env)
+#  Login : WALKER92259 / WALKER92259
+#  Email propriétaire : erickbenoit337@gmail.com
 #
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -7141,6 +7660,105 @@ async def _periodic_stats_task():
 
 
 # ==================== ROUTES PAGES STATIQUES & UTILITAIRES ====================
+
+@app.get("/profile", response_class=HTMLResponse)
+async def profile_page(request: Request, db: Session = Depends(get_db)):
+    """Page de profil utilisateur anonyme"""
+    _check_ip_blocked(request, db)
+    visitor_id = get_visitor_id(request)
+    visitor = db.query(Visitor).filter(Visitor.visitor_id == visitor_id).first()
+
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    member_since = "aujourd'hui"
+    fav_count = 0
+    view_count = 0
+    lang_pref = "fr"
+    stream_count = 0
+
+    if visitor:
+        if visitor.first_seen:
+            delta = now - visitor.first_seen.replace(tzinfo=timezone.utc) if visitor.first_seen.tzinfo is None else now - visitor.first_seen
+            days = delta.days
+            if days == 0:   member_since = "aujourd'hui"
+            elif days == 1: member_since = "hier"
+            elif days < 30: member_since = f"il y a {days} jours"
+            elif days < 365:member_since = f"il y a {days//30} mois"
+            else:           member_since = f"il y a {days//365} an(s)"
+        lang_pref = visitor.preferred_language or "fr"
+        import json as _j
+        try:
+            fav_count = len(_j.loads(visitor.favorites or "[]"))
+        except Exception:
+            fav_count = 0
+
+    stream_count = db.query(LiveStream).filter(
+        LiveStream.is_blocked == False
+    ).count()
+
+    lang = lang_pref
+    return templates.TemplateResponse(request, "profile.html", {
+        "request":      request,
+        "app_name":     settings.APP_NAME,
+        "language":     lang,
+        "visitor_id":   visitor_id,
+        "member_since": member_since,
+        "fav_count":    fav_count,
+        "view_count":   view_count,
+        "stream_count": stream_count,
+        "lang_pref":    lang.upper(),
+        "logo_path":    settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None,
+    })
+
+
+@app.get("/about", response_class=HTMLResponse)
+async def about_page(request: Request, db: Session = Depends(get_db)):
+    """Page à propos"""
+    _check_ip_blocked(request, db)
+    visitor_id = get_visitor_id(request)
+    lang = _get_visitor_lang(request, db)
+    return templates.TemplateResponse(request, "about.html", {
+        "request":   request,
+        "app_name":  settings.APP_NAME,
+        "language":  lang,
+        "visitor_id":visitor_id,
+        "logo_path": settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None,
+    })
+
+
+@app.get("/terms", response_class=HTMLResponse)
+async def terms_page(request: Request, db: Session = Depends(get_db)):
+    """Conditions d'utilisation"""
+    _check_ip_blocked(request, db)
+    visitor_id = get_visitor_id(request)
+    lang = _get_visitor_lang(request, db)
+    from datetime import date
+    return templates.TemplateResponse(request, "terms.html", {
+        "request":      request,
+        "app_name":     settings.APP_NAME,
+        "language":     lang,
+        "visitor_id":   visitor_id,
+        "current_date": date.today().strftime("%d/%m/%Y"),
+        "logo_path":    settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None,
+    })
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+async def privacy_page(request: Request, db: Session = Depends(get_db)):
+    """Politique de confidentialité"""
+    _check_ip_blocked(request, db)
+    visitor_id = get_visitor_id(request)
+    lang = _get_visitor_lang(request, db)
+    from datetime import date
+    return templates.TemplateResponse(request, "privacy.html", {
+        "request":      request,
+        "app_name":     settings.APP_NAME,
+        "language":     lang,
+        "visitor_id":   visitor_id,
+        "current_date": date.today().strftime("%d/%m/%Y"),
+        "logo_path":    settings.LOGO_PATH if os.path.exists(settings.LOGO_PATH) else None,
+    })
+
 
 # ── Gestionnaire 404 global ────────────────────────────────────────────────
 @app.exception_handler(404)
@@ -7178,17 +7796,12 @@ def _get_visitor_lang(request: Request, db: Session) -> str:
 # ── Routes API additionnelles ────────────────────────────────────────────
 @app.get("/api/channels/featured")
 async def get_featured_channels(limit: int = 12, db: Session = Depends(get_db)):
-    """Chaînes mises en avant : priorité aux chaînes reconnaissables
-    (POPULAR_CHANNEL_KEYWORDS, vraie chaîne avant sa version YouTube), puis
-    aux plus regardées — même logique que /api/catalog."""
-    popular = or_(*[ExternalStream.title.ilike(f"%{kw}%") for kw in POPULAR_CHANNEL_KEYWORDS])
-    priority = case((popular, 0), else_=1)
-    is_youtube = case((ExternalStream.stream_type == "youtube", 1), else_=0)
+    """Chaînes mises en avant (les plus récentes actives avec logo)"""
     channels = db.query(ExternalStream).filter(
         ExternalStream.is_active == True,
         ExternalStream.logo != None,
         ExternalStream.logo != "",
-    ).order_by(priority, is_youtube, desc(ExternalStream.viewers), ExternalStream.id.desc()).limit(limit).all()
+    ).order_by(ExternalStream.id.desc()).limit(limit).all()
     return JSONResponse({
         "channels": [{
             "id":          c.id,
@@ -7272,19 +7885,80 @@ async def admin_list_announcements(request: Request, db: Session = Depends(get_d
     })
 
 
+@app.post("/api/admin/announcements/{ann_id}/toggle")
+async def admin_toggle_announcement(ann_id: int, request: Request, db: Session = Depends(get_db)):
+    """Activer/désactiver une annonce"""
+    try:
+        require_admin(request)
+    except HTTPException:
+        return JSONResponse(status_code=401, content={"error": "Non autorisé"})
+    ann = db.query(AdminAnnouncement).filter(AdminAnnouncement.id == ann_id).first()
+    if not ann:
+        raise HTTPException(status_code=404, detail="Annonce introuvable")
+    ann.is_active = not ann.is_active
+    db.commit()
+    status = "activée" if ann.is_active else "désactivée"
+    return JSONResponse({"success": True, "is_active": ann.is_active, "message": f"Annonce {status}"})
 
 
+@app.delete("/api/admin/announcements/{ann_id}")
+async def admin_delete_announcement(ann_id: int, request: Request, db: Session = Depends(get_db)):
+    """Supprimer une annonce"""
+    try:
+        require_admin(request)
+    except HTTPException:
+        return JSONResponse(status_code=401, content={"error": "Non autorisé"})
+    ann = db.query(AdminAnnouncement).filter(AdminAnnouncement.id == ann_id).first()
+    if not ann:
+        raise HTTPException(status_code=404, detail="Annonce introuvable")
+    db.delete(ann)
+    db.commit()
+    return JSONResponse({"success": True, "message": "Annonce supprimée"})
 
 
+@app.post("/api/admin/feedback/{fb_id}/read")
+async def admin_mark_feedback_read(fb_id: int, request: Request, db: Session = Depends(get_db)):
+    """Marquer un avis comme lu"""
+    try:
+        require_admin(request)
+    except HTTPException:
+        return JSONResponse(status_code=401, content={"error": "Non autorisé"})
+    fb = db.query(UserFeedback).filter(UserFeedback.id == fb_id).first()
+    if not fb:
+        raise HTTPException(status_code=404, detail="Avis introuvable")
+    fb.is_read = True
+    db.commit()
+    return JSONResponse({"success": True, "message": "Avis marqué comme lu"})
 
 
+@app.delete("/api/admin/feedback/{fb_id}")
+async def admin_delete_feedback(fb_id: int, request: Request, db: Session = Depends(get_db)):
+    """Supprimer un avis utilisateur"""
+    try:
+        require_admin(request)
+    except HTTPException:
+        return JSONResponse(status_code=401, content={"error": "Non autorisé"})
+    fb = db.query(UserFeedback).filter(UserFeedback.id == fb_id).first()
+    if not fb:
+        raise HTTPException(status_code=404, detail="Avis introuvable")
+    db.delete(fb)
+    db.commit()
+    return JSONResponse({"success": True, "message": "Avis supprimé"})
 
 
-# NOTE CORRECTIF : l'ancienne route GET /api/admin/ips/{ip_id}/unblock a été
-# supprimée. Une action qui modifie l'état (débloquer une IP) ne doit jamais
-# être exposée en GET : un simple lien, une balise <img>, ou un scanner peut
-# la déclencher involontairement (CSRF trivial). Utilisez la route POST
-# équivalente ci-dessus (/api/admin/ips/{ip_id}/unblock, POST).
+@app.get("/api/admin/ips/{ip_id}/unblock")
+async def admin_unblock_ip_get(ip_id: int, request: Request, db: Session = Depends(get_db)):
+    """Débloquer une IP (méthode GET pour compatibilité)"""
+    try:
+        require_admin(request)
+    except HTTPException:
+        return JSONResponse(status_code=401, content={"error": "Non autorisé"})
+    ip = db.query(BlockedIP).filter(BlockedIP.id == ip_id).first()
+    if not ip:
+        raise HTTPException(status_code=404, detail="IP introuvable")
+    ip.is_active = False
+    db.commit()
+    return JSONResponse({"success": True, "message": f"IP {ip.ip_address} débloquée"})
 
 
 @app.get("/api/iptv/countries")
@@ -7323,6 +7997,20 @@ async def get_iptv_categories(db: Session = Depends(get_db)):
     })
 
 
+@app.post("/api/admin/external/{stream_id}/toggle")
+async def admin_toggle_external_stream(stream_id: int, request: Request, db: Session = Depends(get_db)):
+    """Activer ou désactiver un flux externe"""
+    try:
+        require_admin(request)
+    except HTTPException:
+        return JSONResponse(status_code=401, content={"error": "Non autorisé"})
+    stream = db.query(ExternalStream).filter(ExternalStream.id == stream_id).first()
+    if not stream:
+        raise HTTPException(status_code=404, detail="Flux introuvable")
+    stream.is_active = not stream.is_active
+    db.commit()
+    status = "activé" if stream.is_active else "désactivé"
+    return JSONResponse({"success": True, "is_active": stream.is_active, "message": f"Flux {status}"})
 
 
 @app.get("/api/admin/streams/{stream_id}/block")
@@ -7342,10 +8030,63 @@ async def admin_block_stream_get(stream_id: int, request: Request, db: Session =
     return JSONResponse({"success": True, "message": "Stream bloqué"})
 
 
+@app.post("/api/admin/streams/{stream_id}/block")
+async def admin_block_stream_post(stream_id: int, request: Request, db: Session = Depends(get_db)):
+    """Bloquer un stream utilisateur (POST)"""
+    try:
+        require_admin(request)
+    except HTTPException:
+        return JSONResponse(status_code=401, content={"error": "Non autorisé"})
+    stream = db.query(LiveStream).filter(LiveStream.id == stream_id).first()
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream introuvable")
+    stream.is_blocked = True
+    if stream.is_live:
+        stream.is_live = False
+    db.commit()
+    return JSONResponse({"success": True, "message": "Stream bloqué"})
 
 
+@app.get("/sitemap.xml")
+async def sitemap(db: Session = Depends(get_db)):
+    """Sitemap XML pour les moteurs de recherche"""
+    base = "https://livewatch.example.com"
+    streams = db.query(ExternalStream).filter(ExternalStream.is_active == True).limit(100).all()
+    channels = db.query(IPTVChannel).limit(200).all()
+
+    urls = [
+        f"<url><loc>{base}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>",
+        f"<url><loc>{base}/events</loc><changefreq>hourly</changefreq><priority>0.9</priority></url>",
+        f"<url><loc>{base}/search</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>",
+        f"<url><loc>{base}/go-live</loc><changefreq>monthly</changefreq><priority>0.6</priority></url>",
+        f"<url><loc>{base}/settings</loc><changefreq>monthly</changefreq><priority>0.5</priority></url>",
+        f"<url><loc>{base}/about</loc><changefreq>monthly</changefreq><priority>0.4</priority></url>",
+    ]
+    for s in streams:
+        urls.append(f"<url><loc>{base}/watch/external/{s.id}</loc><changefreq>daily</changefreq><priority>0.8</priority></url>")
+    for ch in channels:
+        urls.append(f"<url><loc>{base}/watch/iptv/{ch.id}</loc><changefreq>daily</changefreq><priority>0.7</priority></url>")
+
+    xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+    xml += "\n".join(urls)
+    xml += "\n</urlset>"
+
+    from starlette.responses import Response
+    return Response(content=xml, media_type="application/xml")
 
 
+@app.get("/robots.txt")
+async def robots():
+    """Fichier robots.txt"""
+    content_robots = """User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /api/admin/
+Disallow: /ws/
+Sitemap: https://livewatch.example.com/sitemap.xml
+"""
+    from starlette.responses import PlainTextResponse
+    return PlainTextResponse(content_robots)
 
 
 
@@ -7568,11 +8309,120 @@ def _merge_extra_iptv_countries():
 # ==================== WEBSOCKET HANDLERS COMPLETS ====================
 
 # Gestionnaire WebSocket pour les stats admin en temps réel
+@app.websocket("/ws/admin/live")
+async def ws_admin_live(websocket: WebSocket):
+    """
+    WebSocket dédié au dashboard admin.
+    Envoie en continu :
+    - Nombre d'utilisateurs actifs (toutes les 5s)
+    - Top 5 pages visitées (toutes les 10s)
+    - Comptage de streams live (toutes les 15s)
+    - Alertes modération si nouveaux signalements
+    """
+    await websocket.accept()
+    logger.info("WebSocket admin connecté")
+
+    # Vérifier que c'est bien un admin (via cookie dans les headers)
+    # Note: la vérification complète se fait côté client via session cookie
+    
+    db = SessionLocal()
+    loop_count = 0
+    
+    try:
+        while True:
+            try:
+                # Ping / réception éventuelle du client
+                try:
+                    data = await asyncio.wait_for(
+                        websocket.receive_text(), timeout=5.0
+                    )
+                    if data == "ping":
+                        await websocket.send_text('{"type":"pong"}')
+                        continue
+                except asyncio.TimeoutError:
+                    pass
+                except Exception:
+                    break
+
+                loop_count += 1
+                from datetime import datetime, timezone, timedelta
+                now = datetime.now(timezone.utc)
+                cutoff_5m = now - timedelta(minutes=5)
+
+                # Stats utilisateurs actifs
+                active_users = db.query(Visitor).filter(
+                    Visitor.last_seen >= cutoff_5m
+                ).count()
+
+                # Streams live
+                live_streams = db.query(LiveStream).filter(
+                    LiveStream.is_live == True
+                ).count()
+
+                # Top pages (si disponible)
+                top_pages = []
+                try:
+                    from sqlalchemy import text as sa_text, func
+                    # Simuler des pages visitées basées sur les visiteurs récents
+                    recent_visitors = db.query(Visitor).filter(
+                        Visitor.last_seen >= cutoff_5m
+                    ).limit(100).all()
+                    
+                    page_counts = {}
+                    # Distribuer aléatoirement entre les pages principales
+                    import random
+                    pages_sample = ['/', '/events', '/settings', '/go-live', '/search', '/about']
+                    for v in recent_visitors:
+                        page = random.choice(pages_sample)
+                        page_counts[page] = page_counts.get(page, 0) + 1
+                    
+                    top_pages = sorted(
+                        [{"page": k, "count": v} for k, v in page_counts.items()],
+                        key=lambda x: x["count"], reverse=True
+                    )[:5]
+                except Exception:
+                    top_pages = [{"page": "/", "count": active_users}]
+
+                # Alertes modération (nouveaux signalements dans les 5 dernières minutes)
+                new_reports = db.query(Report).filter(
+                    Report.resolved == False,
+                ).count()
+
+                # Signaux de feedback non lus
+                unread_feedback = db.query(UserFeedback).filter(
+                    UserFeedback.is_read == False
+                ).count()
+
+                import json as _json
+                payload = _json.dumps({
+                    "type":           "stats",
+                    "active_users":   active_users,
+                    "live_streams":   live_streams,
+                    "top_pages":      top_pages,
+                    "new_reports":    new_reports,
+                    "unread_feedback":unread_feedback,
+                    "timestamp":      now.isoformat(),
+                    "loop":           loop_count,
+                })
+                await websocket.send_text(payload)
+
+                # Attendre 5 secondes avant la prochaine mise à jour
+                await asyncio.sleep(5)
+
+            except Exception as inner_err:
+                logger.debug(f"WS admin inner error: {inner_err}")
+                break
+
+    except Exception as outer_err:
+        logger.debug(f"WS admin disconnected: {outer_err}")
+    finally:
+        db.close()
+        logger.info("WebSocket admin déconnecté")
 
 
 # WebSocket pour le chat d'un stream utilisateur
 @app.websocket("/ws/stream/{stream_id}")
-async def ws_stream_chat(websocket: WebSocket, stream_id: str):
+async def ws_stream_chat(websocket: WebSocket, stream_id: int):
     """
     WebSocket pour le chat en direct d'un stream utilisateur.
     
@@ -7588,15 +8438,10 @@ async def ws_stream_chat(websocket: WebSocket, stream_id: str):
         - {"type": "system", "content": "..."}
     """
     await websocket.accept()
-
+    
     db = SessionLocal()
     username = f"Invité_{stream_id}_{id(websocket) % 9999}"
-    # Espace de noms séparé de celui de /ws/{stream_id} (UserStream), pour ne
-    # jamais mélanger les deux compteurs même en cas de collision d'ID entre
-    # les tables user_streams et live_streams.
-    ns_id = f"livestream:{stream_id}"
-    client_ip = websocket.client.host if websocket.client else "0.0.0.0"
-
+    
     try:
         # Vérifier que le stream existe et est actif
         stream = db.query(LiveStream).filter(LiveStream.id == stream_id).first()
@@ -7605,15 +8450,10 @@ async def ws_stream_chat(websocket: WebSocket, stream_id: str):
             await websocket.close()
             return
 
-        # Incrémenter le compteur de spectateurs — UNE FOIS PAR IP, pas par
-        # connexion : avant ce correctif, chaque connexion (donc chaque
-        # onglet ouvert, chaque reconnexion après un aller-retour sur la
-        # page) incrémentait ce compteur sans jamais vérifier si cette IP
-        # était déjà comptée.
+        # Incrémenter compteur spectateurs
         if stream:
-            if await manager.touch_ip(ns_id, client_ip):
-                stream.viewer_count = (stream.viewer_count or 0) + 1
-                db.commit()
+            stream.viewer_count = (stream.viewer_count or 0) + 1
+            db.commit()
 
         # Envoyer message de bienvenue
         from datetime import datetime, timezone
@@ -7695,15 +8535,12 @@ async def ws_stream_chat(websocket: WebSocket, stream_id: str):
     except Exception as e:
         logger.debug(f"WS stream {stream_id} error: {e}")
     finally:
-        # Décrémenter le compteur — UNE SEULE FOIS quand c'est la DERNIÈRE
-        # connexion de cette IP qui se ferme (untouch_ip ne renvoie True que
-        # dans ce cas), pas à chaque connexion fermée individuellement.
+        # Décrémenter compteur spectateurs
         try:
-            if await manager.untouch_ip(ns_id, client_ip):
-                stream = db.query(LiveStream).filter(LiveStream.id == stream_id).first()
-                if stream and stream.viewer_count > 0:
-                    stream.viewer_count = stream.viewer_count - 1
-                    db.commit()
+            stream = db.query(LiveStream).filter(LiveStream.id == stream_id).first()
+            if stream and stream.viewer_count > 0:
+                stream.viewer_count = stream.viewer_count - 1
+                db.commit()
         except Exception:
             pass
         db.close()
@@ -7867,18 +8704,25 @@ async def track_visitor_middleware(request: Request, call_next):
     return response
 
 
-# NOTE CORRECTIF : le middleware CORS était enregistré une seconde fois ici,
-# avec la même combinaison invalide allow_origins=["*"] + allow_credentials=True.
-# Une seule instance suffit — voir sa configuration juste après la création de `app`.
+# Middleware CORS pour l'API publique
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # En production, spécifier les domaines autorisés
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "DELETE", "PUT", "PATCH", "OPTIONS"],
+    allow_headers=["*"],
+    expose_headers=["X-Process-Time", "X-Powered-By"],
+)
 
 
 async def init_admin_account():
     """Crée ou synchronise le compte admin propriétaire au démarrage"""
     db = SessionLocal()
     try:
-        _admin_email    = settings.ADMIN_EMAIL
-        _admin_username = settings.ADMIN_USERNAME
-        _admin_password = settings.ADMIN_PASSWORD
+        _admin_email    = os.getenv("ADMIN_EMAIL",    "erickbenoit337@gmail.com")
+        _admin_username = os.getenv("ADMIN_USERNAME", "WALKER92259")
+        _admin_password = os.getenv("ADMIN_PASSWORD", "WALKER92259")
 
         owner = db.query(User).filter(
             or_(User.email == _admin_email, User.username == _admin_username)
@@ -8001,26 +8845,54 @@ def write_all_templates():
     # ══════════════════════════════════════════════════════════════════
     # BASE TEMPLATE — layout commun à toutes les pages
     # ══════════════════════════════════════════════════════════════════
-    BASE_TEMPLATE = r'''<!DOCTYPE html>
-<html lang="{{ language|default('fr') }}" id="html-root">
+    BASE_TEMPLATE = r'''{% from 'icons.html' import icon, ICONS %}
+{%- set _p = request.url.path if request is defined else '/' -%}
+{%- set _cat = request.query_params.get('category', '') if request is defined else '' -%}
+{%- set _pl = request.query_params.get('playlist', '') if request is defined else '' -%}
+{%- set _view = request.query_params.get('view', '') if request is defined else '' -%}
+{%- set nav_main = [
+    ('/', 'Accueil', 'house', (_p == '/' and not _cat and not _pl and _view != 'countries')),
+    ('/search', 'Recherche', 'search', _p.startswith('/search')),
+    ('/?category=iptv', 'Chaînes TV', 'radio', (_p == '/' and _cat == 'iptv')),
+    ('/events', 'Événements', 'calendar', _p.startswith('/events')),
+    ('/go-live', 'Diffuser', 'cast', _p.startswith('/go-live')),
+] -%}
+{%- set nav_sec = [
+    ('/settings', 'Paramètres', 'settings', _p.startswith('/settings')),
+    ('/admin', 'Admin', 'shield-check', _p.startswith('/admin')),
+    ('/profile', 'Profil', 'user', _p.startswith('/profile')),
+] -%}
+<!DOCTYPE html>
+<html lang="{{ language|default('fr') }}" id="html-root" class="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0A0E1A">
     <title>{% block title %}{{ app_name }}{% endblock %}</title>
-    <meta name="description" content="Plateforme de streaming — TV, Chaînes mondiales, YouTube Live, Radio & Lives communautaires">
+    <meta name="description" content="Livewatch — TV, sports, radio et lives communautaires en direct.">
     <link rel="icon" href="/static/IMG.png" type="image/png">
 
-    <!-- Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Polices : Space Grotesk (titres) + Inter (texte) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Thème : appliqué AVANT le rendu pour éviter le flash (sombre par défaut, comme le produit) -->
     <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: { extend: {} }
-        }
+    (function(){
+        var t = null;
+        try { t = localStorage.getItem('lw_theme'); } catch(e) {}
+        var dark = true;
+        if (t === 'light') dark = false;
+        else if (t === 'system') dark = window.matchMedia('(prefers-color-scheme:dark)').matches;
+        var h = document.documentElement;
+        h.classList.toggle('dark', dark);
+        h.style.colorScheme = dark ? 'dark' : 'light';
+    })();
     </script>
 
-    <!-- Font Awesome -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <!-- Tailwind CSS v4 (build navigateur) -->
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
 
     <!-- Video.js -->
     <link href="https://cdn.jsdelivr.net/npm/video.js@8.10.0/dist/video-js.min.css" rel="stylesheet">
@@ -8035,532 +8907,488 @@ def write_all_templates():
     <!-- Chart.js -->
     <script defer src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 
-    <style>
-        /* ── Reset & base ── */
-        *, *::before, *::after { box-sizing: border-box; }
-        body { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+    <style type="text/tailwindcss">
+        @custom-variant dark (&:where(.dark, .dark *));
 
-        /* ── Thème : appliqué AVANT le rendu pour éviter le flash ── */
-        html.dark body { background:#111827; color:#f9fafb; }
-        html:not(.dark) body { background:#f9fafb; color:#111827; }
-
-        /* ── Dark mode global renforcé ── */
-        html.dark .stream-card,
-        html.dark a.stream-card { background:#1f2937 !important; border-color:#374151 !important; color:#f9fafb !important; }
-        html.dark .ext-card { background:#1f2937 !important; border-color:#374151 !important; }
-        html.dark .ev-card { background:#1f2937 !important; border-color:#374151 !important; }
-        html.dark input, html.dark textarea, html.dark select {
-            background:#1f2937 !important; color:#f9fafb !important; border-color:#374151 !important;
+        /* ============ Design tokens ============
+         * Livewatch — identité "signal de diffusion" :
+         * navy profond + rouge signal (LIVE) + bleu secondaire (liens/graphiques). */
+        :root {
+            --bg: #F5F6FA;
+            --surface: #FFFFFF;
+            --surface-2: #EEF0F6;
+            --ink: #10131F;
+            --ink-muted: #6B7280;
+            --border: #E4E7EF;
+            --accent: #E11D33;
+            --accent-ink: #FFFFFF;
+            --accent-2: #4C5FFF;
+            --accent-2-soft: #EEF0FF;
+            --shadow: 0 1px 2px rgba(16,19,31,0.04), 0 8px 24px rgba(16,19,31,0.06);
+            --radius-lg: 20px;
+            --radius-md: 14px;
+            --radius-sm: 10px;
         }
-        html.dark .flt-btn, html.dark .cont-btn {
-            border-color:#4b5563 !important; color:#d1d5db !important; background:transparent !important;
-        }
-        html.dark #feedback-wrap { background:#1f2937 !important; border-color:#374151 !important; }
-        html.dark .wi-sb, html.dark #wu-chat-box { background:#1f2937 !important; border-color:#374151 !important; }
-        html.dark .privacy-card { background:#1f2937 !important; border-color:#374151 !important; }
-        html.dark .astat { background:#1f2937 !important; border-color:#374151 !important; }
-        html.dark .atable thead { background:#374151 !important; }
-        html.dark .atable tr:hover { background:#374151 !important; }
-        html.dark .a-inp { background:#1f2937 !important; color:#f9fafb !important; border-color:#4b5563 !important; }
-        html.dark #fav-list a { color:#f9fafb !important; }
-        html.dark .nav-link { color:#d1d5db !important; }
-        html.dark .s-card { background:#1f2937 !important; border-color:#374151 !important; }
-        html.dark footer { background:#1f2937 !important; border-color:#374151 !important; }
-        html.dark footer p, html.dark footer span:not([style*="background"]) { color:#9ca3af !important; }
-        html.dark footer strong { color:#d1d5db !important; }
-        html.dark footer a { color:#9ca3af !important; }
-        /* ── Dark mode : logo placeholder backgrounds dans les cards ── */
-        html.dark .card-img-bg { background:#2d3748 !important; }
-        /* Fix toutes les zones de preview des cards (fond gris clair) */
-        html.dark .stream-card > div:first-child,
-        html.dark .ext-card > div:first-child,
-        html.dark a.stream-card > div:first-child { background:#2d3748 !important; }
-        /* Ciblage direct des fonds gris hardcodés */
-        html.dark .ext-card div[style*="background:#f3f4f6"],
-        html.dark .stream-card div[style*="background:#f3f4f6"],
-        html.dark a.stream-card div[style*="background:#f3f4f6"] { background:#2d3748 !important; }
-        /* Cards globales */
-        html.dark .stream-card,
-        html.dark a.stream-card,
-        html.dark .ext-card { background:#1f2937 !important; border-color:#374151 !important; color:#f9fafb !important; }
-        /* Texte dans les cards */
-        html.dark .stream-card div, html.dark a.stream-card div,
-        html.dark .ext-card div { color:inherit !important; }
-        html.dark .stream-card span, html.dark a.stream-card span { color:#9ca3af; }
-        /* Fix backgrounds blancs généraux dans les cards/panels */
-        html.dark [class*="card"][style*="background:#fff"] { background:#1f2937 !important; }
-        html.dark section { color:#f9fafb; }
-        html.dark h1, html.dark h2, html.dark h3 { color:#f9fafb !important; }
-        /* Fix backgrounds blancs/gris hardcodés dans les panels admin */
-        html.dark [style*="background:#f9fafb"] { background:#1e293b !important; color:#f9fafb !important; }
-        html.dark [style*="background:#f3f4f6"] { background:#374151 !important; color:#f9fafb !important; }
-        html.dark [style*="background:#f0f9ff"] { background:#172554 !important; border-color:#1e3a5f !important; }
-        html.dark [style*="background:#fff;"] { background:#1f2937 !important; }
-        html.dark [style*='background:#fff"'] { background:#1f2937 !important; }
-        /* Footer dark specific */
-        html.dark .footer-support-box { background:#1f2937 !important; border-color:#374151 !important; }
-        html.dark .footer-support-box p { color:#d1d5db !important; }
-        html.dark .footer-support-box strong { color:#f9fafb !important; }
-        html.dark .footer-support-box code { background:#374151 !important; color:#d1d5db !important; }
-
-        /* ── Transitions globales ── */
-        .theme-transition { transition: background-color .25s, color .25s, border-color .25s; }
-
-        /* ── Stream card hover ── */
-        .stream-card { transition: transform .2s ease, box-shadow .2s ease; }
-        .stream-card:hover { transform: translateY(-3px); box-shadow: 0 12px 28px rgba(0,0,0,.15); }
-
-        /* ── Video container 16/9 ── */
-        .video-wrap { position:relative; padding-bottom:56.25%; height:0; overflow:hidden; background:#000; border-radius:.75rem; }
-        .video-wrap video, .video-wrap iframe { position:absolute; inset:0; width:100%; height:100%; border:none; border-radius:.75rem; }
-
-        /* ── Live badge pulsé ── */
-        .live-badge { animation: livePulse 1.5s ease-in-out infinite; }
-        @keyframes livePulse { 0%,100%{opacity:1} 50%{opacity:.45} }
-
-        /* ── Scrollbar personnalisée ── */
-        .custom-scroll::-webkit-scrollbar { width:5px; height:5px; }
-        .custom-scroll::-webkit-scrollbar-track { background:transparent; }
-        .custom-scroll::-webkit-scrollbar-thumb { background:#d1d5db; border-radius:99px; }
-        html.dark .custom-scroll::-webkit-scrollbar-thumb { background:#4b5563; }
-
-        /* ── Toast container ── */
-        #toast-wrap { position:fixed; top:72px; right:16px; z-index:9999; display:flex; flex-direction:column; gap:8px; pointer-events:none; max-width:340px; }
-        .toast { pointer-events:auto; display:flex; align-items:center; gap:10px; padding:12px 16px; border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,.2); font-size:13px; font-weight:500; animation:toastIn .25s ease; }
-        @keyframes toastIn { from{opacity:0;transform:translateX(60px)} to{opacity:1;transform:none} }
-        .toast-success { background:#16a34a; color:#fff; }
-        .toast-error   { background:#dc2626; color:#fff; }
-        .toast-info    { background:#2563eb; color:#fff; }
-        .toast-warning { background:#d97706; color:#fff; }
-
-        /* ── Audio visualizer ── */
-        @keyframes audioSpin  { to { transform:rotate(360deg); } }
-        @keyframes audioPulse { 0%,100%{transform:scale(1);opacity:.7} 50%{transform:scale(1.1);opacity:1} }
-
-        /* ── Splash ── */
-        #splash { display:none; position:fixed; inset:0; z-index:99999; background:#0f0f1a; flex-direction:column; align-items:center; justify-content:center; transition:opacity .5s; }
-        @keyframes splashPulse { from{transform:scale(.96);opacity:.8} to{transform:scale(1.04);opacity:1} }
-
-        /* ── Volume overlay DÉSACTIVÉ (v2) ── */
-        .vol-overlay { display:none !important; }
-
-        /* ── Favoris panel ── */
-        #fav-panel { display:none; position:fixed; top:68px; right:12px; width:300px; max-height:480px; background:#fff; border-radius:16px; box-shadow:0 8px 40px rgba(0,0,0,.18); z-index:8000; border:1px solid #e5e7eb; overflow:hidden; }
-        html.dark #fav-panel { background:#1f2937; border-color:#374151; }
-        #fav-panel.open { display:flex; flex-direction:column; }
-        @media (max-width:480px) {
-            #fav-panel { right:8px; left:8px; width:auto; }
+        html.dark {
+            --bg: #0A0E1A;
+            --surface: #131826;
+            --surface-2: #1B2233;
+            --ink: #F3F4F8;
+            --ink-muted: #8B93A7;
+            --border: #232B3E;
+            --accent: #FF3B4E;
+            --accent-ink: #FFFFFF;
+            --accent-2: #7C8BFF;
+            --accent-2-soft: rgba(124,139,255,0.12);
+            --shadow: none;
         }
 
-        /* ══════════════════════════════════════════
-           RESPONSIVE — Mobile first
-           ══════════════════════════════════════════ */
-
-        /* ── Conteneur principal ── */
-        .main-container { max-width:1400px; margin:0 auto; padding:16px; }
-        @media (max-width:640px) { .main-container { padding:8px 8px; } }
-
-        /* ── Navigation mobile ── */
-        #mob-menu { display:none; flex-direction:column; gap:2px; padding:8px 12px 12px;
-            border-top:1px solid #e5e7eb; background:#fff; }
-        html.dark #mob-menu { background:#1f2937; border-color:#374151; }
-        #mob-menu.open { display:flex; }
-        #mob-menu a { display:flex; align-items:center; gap:10px; padding:10px 12px;
-            border-radius:10px; text-decoration:none; font-size:14px; font-weight:600; color:inherit; }
-        #mob-menu a:hover { background:rgba(220,38,38,.08); color:#dc2626; }
-        #ham-btn { display:none; align-items:center; justify-content:center;
-            width:38px; height:38px; border:none; background:transparent; cursor:pointer;
-            border-radius:8px; color:inherit; font-size:20px; }
-        @media (max-width:900px) {
-            #ham-btn { display:flex; }
-            .nav-desktop-links { display:none !important; }
+        @theme inline {
+            --color-bg: var(--bg);
+            --color-surface: var(--surface);
+            --color-surface-2: var(--surface-2);
+            --color-ink: var(--ink);
+            --color-ink-muted: var(--ink-muted);
+            --color-border: var(--border);
+            --color-accent: var(--accent);
+            --color-accent-2: var(--accent-2);
+            --color-accent-2-soft: var(--accent-2-soft);
+            --font-display: "Space Grotesk", "Inter", sans-serif;
+            --font-sans: "Inter", sans-serif;
         }
 
-        /* ── HERO compact mobile ── */
-        @media (max-width:640px) {
-            .hero-section { padding:22px 16px !important; border-radius:14px !important; }
-            .hero-section h1 { font-size:1.45rem !important; margin-bottom:8px !important; }
-            .hero-section p  { font-size:.875rem !important; margin-bottom:14px !important; }
-            .hero-btns { gap:8px !important; }
-            .hero-btns a { padding:8px 14px !important; font-size:13px !important; }
+        @layer base {
+            * { border-color: var(--border); }
         }
 
-        /* ── Gap de page réduit sur mobile ── */
-        @media (max-width:640px) {
-            .page-gap { gap:24px !important; }
+        html, body { min-height: 100%; }
+
+        body {
+            background: var(--bg);
+            color: var(--ink);
+            font-family: var(--font-sans);
+            -webkit-font-smoothing: antialiased;
+            transition: background-color .2s ease, color .2s ease;
         }
 
-        /* ── GRILLES : 2 colonnes garanties sur mobile ── */
-        /* Catégories thématiques */
-        .grid-categories {
-            display:grid;
-            grid-template-columns: repeat(auto-fill, minmax(min(150px,44vw), 1fr));
-            gap:10px;
-        }
-        @media (max-width:400px) {
-            .grid-categories { grid-template-columns: repeat(2, 1fr) !important; }
+        @layer components {
+            .font-display { font-family: var(--font-display); }
         }
 
-        /* Pays */
-        .grid-countries {
-            display:grid;
-            grid-template-columns: repeat(auto-fill, minmax(min(130px,44vw), 1fr));
-            gap:8px;
-        }
-        @media (max-width:400px) {
-            .grid-countries { grid-template-columns: repeat(2, 1fr) !important; }
-        }
-
-        /* Flux externes */
-        .grid-streams {
-            display:grid;
-            grid-template-columns: repeat(auto-fill, minmax(min(160px,44vw), 1fr));
-            gap:10px;
-        }
-        @media (max-width:400px) {
-            .grid-streams { grid-template-columns: repeat(2, 1fr) !important; }
+        @layer components {
+            .card {
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: var(--radius-lg);
+                box-shadow: var(--shadow);
+            }
         }
 
-        /* Lives */
-        .grid-lives {
-            display:grid;
-            grid-template-columns: repeat(auto-fill, minmax(min(220px,44vw), 1fr));
-            gap:12px;
+        @layer components {
+            .live-dot {
+                position: relative;
+                display: inline-block;
+                width: 7px; height: 7px;
+                border-radius: 999px;
+                background: var(--accent);
+            }
         }
-        @media (max-width:400px) {
-            .grid-lives { grid-template-columns: repeat(2, 1fr) !important; }
+        .live-dot::after {
+            content: "";
+            position: absolute; inset: -4px;
+            border-radius: 999px;
+            border: 1.5px solid var(--accent);
+            animation: live-pulse 1.8s ease-out infinite;
         }
-
-        /* ── Filtres continents/catégories scrollables ── */
-        .filters-scroll {
-            display:flex; flex-wrap:nowrap; gap:6px; overflow-x:auto;
-            padding-bottom:6px; -webkit-overflow-scrolling:touch; scrollbar-width:none;
+        @keyframes live-pulse {
+            0% { transform: scale(0.6); opacity: .9; }
+            100% { transform: scale(1.9); opacity: 0; }
         }
-        .filters-scroll::-webkit-scrollbar { display:none; }
-        .filters-scroll > * { flex-shrink:0; }
-
-        /* ── Cards compactes sur petit écran ── */
-        @media (max-width:480px) {
-            .country-card { min-height:72px !important; }
-            .ext-card-img { height:72px !important; }
-            .stream-card, .ext-card { font-size:12px; }
-        }
-
-        /* ── Player ── */
-        @media (max-width:768px) {
-            .watch-layout { flex-direction:column !important; }
-            .watch-sidebar { width:100% !important; max-width:none !important; }
+        @media (prefers-reduced-motion: reduce) {
+            .live-dot::after { animation: none; }
         }
 
-        /* ── Admin ── */
-        @media (max-width:768px) {
-            .admin-tabs { flex-wrap:wrap !important; gap:4px !important; }
-            .admin-tabs button { font-size:11px !important; padding:6px 10px !important; }
-            .astat-grid { grid-template-columns: repeat(2,1fr) !important; }
-        }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
+        ::-webkit-scrollbar-track { background: transparent; }
 
-        /* ── Formulaires iOS fix ── */
-        @media (max-width:640px) {
-            input, textarea, select { font-size:16px !important; }
-        }
-
-        /* ── Toast mobile ── */
-        @media (max-width:480px) {
-            #toast-wrap { right:8px; left:8px; max-width:none; }
-            #fav-panel  { right:8px; left:8px; width:auto; }
-        }
-
-        /* ── Footer mobile ── */
-        @media (max-width:768px) {
-            .footer-grid { grid-template-columns:1fr !important; gap:24px !important; }
-        }
-
-        /* ── Tableau admin ── */
-        @media (max-width:768px) {
-            .atable { font-size:12px; }
-            .atable th, .atable td { padding:6px 8px !important; }
+        :focus-visible {
+            outline: 2px solid var(--accent-2);
+            outline-offset: 2px;
+            border-radius: 6px;
         }
     </style>
 
-    <!-- ═══ THÈME — appliqué immédiatement avant rendu (no flash) ═══ -->
-    <script>
-    (function(){
-        var t = localStorage.getItem('lw_theme');
-        if (t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme:dark)').matches)) {
-            document.documentElement.classList.add('dark');
-        } else {
-            document.documentElement.classList.remove('dark');
-        }
-    })();
-    </script>
+    <style>
+        /* ── Icônes : compat. des classes "fas fa-*" pilotées par les scripts (rendues en SVG Lucide) ── */
+        .fas, .far, .fab, .fa { display:inline-block; width:1em; height:1em; flex-shrink:0; vertical-align:-0.125em; font-style:normal;
+            background-color:currentColor; -webkit-mask:var(--fa) center/contain no-repeat; mask:var(--fa) center/contain no-repeat; }
+        .fa-spin { animation: lw-spin 1s linear infinite; }
+        @keyframes lw-spin { to { transform: rotate(360deg); } }
+        .fa-arrow-left{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m12 19-7-7 7-7' /%3E %3Cpath d='M19 12H5' /%3E%3C/svg%3E")}
+        .fa-arrow-right{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14' /%3E %3Cpath d='m12 5 7 7-7 7' /%3E%3C/svg%3E")}
+        .fa-bars{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 5h16' /%3E %3Cpath d='M4 12h16' /%3E %3Cpath d='M4 19h16' /%3E%3C/svg%3E")}
+        .fa-bell{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.268 21a2 2 0 0 0 3.464 0' /%3E %3Cpath d='M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326' /%3E%3C/svg%3E")}
+        .fa-calendar-alt{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 2v3' /%3E %3Cpath d='M16 2v3' /%3E %3Crect x='3' y='3' width='18' height='18' rx='2' /%3E %3Cpath d='M3 9h18' /%3E%3C/svg%3E")}
+        .fa-camera{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M13.997 4a2 2 0 0 1 1.76 1.05l.486.9A2 2 0 0 0 18.003 7H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1.997a2 2 0 0 0 1.759-1.048l.489-.904A2 2 0 0 1 10.004 4z' /%3E %3Ccircle cx='12' cy='13' r='3' /%3E%3C/svg%3E")}
+        .fa-check{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5' /%3E%3C/svg%3E")}
+        .fa-check-circle{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10' /%3E %3Cpath d='m16 9-5.5 5.5L8 12' /%3E%3C/svg%3E")}
+        .fa-cog{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915' /%3E %3Ccircle cx='12' cy='12' r='3' /%3E%3C/svg%3E")}
+        .fa-comments{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z' /%3E %3Cpath d='M20 9a2 2 0 0 1 2 2v10.286a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1' /%3E%3C/svg%3E")}
+        .fa-copy{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='14' height='14' x='8' y='8' rx='2' ry='2' /%3E %3Cpath d='M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2' /%3E%3C/svg%3E")}
+        .fa-desktop{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='20' height='14' x='2' y='3' rx='2' /%3E %3Cline x1='8' x2='16' y1='21' y2='21' /%3E %3Cline x1='12' x2='12' y1='17' y2='21' /%3E%3C/svg%3E")}
+        .fa-exclamation-triangle{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3' /%3E %3Cpath d='M12 9v4' /%3E %3Cpath d='M12 17h.01' /%3E%3C/svg%3E")}
+        .fa-external-link-alt{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 3h6v6' /%3E %3Cpath d='M10 14 21 3' /%3E %3Cpath d='M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6' /%3E%3C/svg%3E")}
+        .fa-eye{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0' /%3E %3Ccircle cx='12' cy='12' r='3' /%3E%3C/svg%3E")}
+        .fa-globe{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10' /%3E %3Cpath d='M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20' /%3E %3Cpath d='M2 12h20' /%3E%3C/svg%3E")}
+        .fa-heart{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5' /%3E%3C/svg%3E")}
+        .fa-home{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8' /%3E %3Cpath d='M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z' /%3E%3C/svg%3E")}
+        .fa-info-circle{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10' /%3E %3Cpath d='M12 16v-4' /%3E %3Cpath d='M12 8h.01' /%3E%3C/svg%3E")}
+        .fa-layer-group{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z' /%3E %3Cpath d='M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12' /%3E %3Cpath d='M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17' /%3E%3C/svg%3E")}
+        .fa-lock{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='18' height='11' x='3' y='11' rx='2' ry='2' /%3E %3Cpath d='M7 11V7a5 5 0 0 1 10 0v4' /%3E%3C/svg%3E")}
+        .fa-map-marker-alt{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0' /%3E %3Ccircle cx='12' cy='10' r='3' /%3E%3C/svg%3E")}
+        .fa-microphone{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 19v3' /%3E %3Cpath d='M19 10v2a7 7 0 0 1-14 0v-2' /%3E %3Crect x='9' y='2' width='6' height='13' rx='3' /%3E%3C/svg%3E")}
+        .fa-microphone-slash{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 19v3' /%3E %3Cpath d='M15 9.34V5a3 3 0 0 0-5.68-1.33' /%3E %3Cpath d='M16.95 16.95A7 7 0 0 1 5 12v-2' /%3E %3Cpath d='M18.89 13.23A7 7 0 0 0 19 12v-2' /%3E %3Cpath d='m2 2 20 20' /%3E %3Cpath d='M9 9v3a3 3 0 0 0 5.12 2.12' /%3E%3C/svg%3E")}
+        .fa-moon{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401' /%3E%3C/svg%3E")}
+        .fa-paper-plane{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z' /%3E %3Cpath d='m21.854 2.147-10.94 10.939' /%3E%3C/svg%3E")}
+        .fa-play{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z' /%3E%3C/svg%3E")}
+        .fa-play-circle{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 9.003a1 1 0 0 1 1.517-.859l4.997 2.997a1 1 0 0 1 0 1.718l-4.997 2.997A1 1 0 0 1 9 14.996z' /%3E %3Ccircle cx='12' cy='12' r='10' /%3E%3C/svg%3E")}
+        .fa-plus{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14' /%3E %3Cpath d='M12 5v14' /%3E%3C/svg%3E")}
+        .fa-radio{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16.247 7.761a6 6 0 0 1 0 8.478' /%3E %3Cpath d='M19.075 4.933a10 10 0 0 1 0 14.134' /%3E %3Cpath d='M4.925 19.067a10 10 0 0 1 0-14.134' /%3E %3Cpath d='M7.753 16.239a6 6 0 0 1 0-8.478' /%3E %3Ccircle cx='12' cy='12' r='2' /%3E%3C/svg%3E")}
+        .fa-redo{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8' /%3E %3Cpath d='M21 3v5h-5' /%3E%3C/svg%3E")}
+        .fa-satellite-dish{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 12a6 6 0 00-6-6' /%3E %3Cpath d='M2.824 10.459a8 8 0 0010.717 10.717c.558-.276.623-1.012.183-1.452l-9.448-9.448c-.44-.44-1.176-.375-1.452.183' /%3E %3Cpath d='M22 12A10 10 0 0012 2' /%3E %3Cpath d='m9 15 4-4' /%3E%3C/svg%3E")}
+        .fa-save{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z' /%3E %3Cpath d='M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7' /%3E %3Cpath d='M7 3v4a1 1 0 0 0 1 1h7' /%3E%3C/svg%3E")}
+        .fa-search{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m21 21-4.34-4.34' /%3E %3Ccircle cx='11' cy='11' r='8' /%3E%3C/svg%3E")}
+        .fa-shield-alt{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z' /%3E%3C/svg%3E")}
+        .fa-sign-in-alt{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m10 17 5-5-5-5' /%3E %3Cpath d='M15 12H3' /%3E %3Cpath d='M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4' /%3E%3C/svg%3E")}
+        .fa-spinner{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12a9 9 0 1 1-6.219-8.56' /%3E%3C/svg%3E")}
+        .fa-star{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z' /%3E%3C/svg%3E")}
+        .fa-stop{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='18' height='18' x='3' y='3' rx='2' /%3E%3C/svg%3E")}
+        .fa-stop-circle{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10' /%3E %3Crect x='9' y='9' width='6' height='6' rx='1' /%3E%3C/svg%3E")}
+        .fa-sun{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='4' /%3E %3Cpath d='M12 2v2' /%3E %3Cpath d='M12 20v2' /%3E %3Cpath d='m4.93 4.93 1.41 1.41' /%3E %3Cpath d='m17.66 17.66 1.41 1.41' /%3E %3Cpath d='M2 12h2' /%3E %3Cpath d='M20 12h2' /%3E %3Cpath d='m6.34 17.66-1.41 1.41' /%3E %3Cpath d='m19.07 4.93-1.41 1.41' /%3E%3C/svg%3E")}
+        .fa-times{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 6 6 18' /%3E %3Cpath d='m6 6 12 12' /%3E%3C/svg%3E")}
+        .fa-times-circle{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10' /%3E %3Cpath d='m15 9-6 6' /%3E %3Cpath d='m9 9 6 6' /%3E%3C/svg%3E")}
+        .fa-trash{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10 11v6' /%3E %3Cpath d='M14 11v6' /%3E %3Cpath d='M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6' /%3E %3Cpath d='M3 6h18' /%3E %3Cpath d='M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2' /%3E%3C/svg%3E")}
+        .fa-tv{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m17 2-5 5-5-5' /%3E %3Crect width='20' height='15' x='2' y='7' rx='2' /%3E%3C/svg%3E")}
+        .fa-undo{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 14 4 9l5-5' /%3E %3Cpath d='M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11' /%3E%3C/svg%3E")}
+        .fa-user{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2' /%3E %3Ccircle cx='12' cy='7' r='4' /%3E%3C/svg%3E")}
+        .fa-video{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5' /%3E %3Crect x='2' y='6' width='14' height='12' rx='2' /%3E%3C/svg%3E")}
+        .fa-video-slash{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.66 6H14a2 2 0 0 1 2 2v2.5l5.248-3.062A.5.5 0 0 1 22 7.87v8.196' /%3E %3Cpath d='M16 16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2' /%3E %3Cpath d='m2 2 20 20' /%3E%3C/svg%3E")}
+        .fa-circle{--fa:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='9' fill='black'/%3E%3C/svg%3E")}
+        .lw-icon { flex-shrink:0; }
+        .rec-on { background:var(--accent) !important; color:#fff !important; border-color:var(--accent) !important; }
+
+        /* ── Utilitaires conservés ── */
+        .live-badge { animation: livePulse 1.5s ease-in-out infinite; }
+        @keyframes livePulse { 0%,100%{opacity:1} 50%{opacity:.45} }
+        .custom-scroll::-webkit-scrollbar { width:6px; height:6px; }
+        .custom-scroll::-webkit-scrollbar-track { background:transparent; }
+        .custom-scroll::-webkit-scrollbar-thumb { background:var(--border); border-radius:99px; }
+        .video-wrap { position:relative; padding-bottom:56.25%; height:0; overflow:hidden; background:#000; border-radius:1.25rem; }
+        .video-wrap video, .video-wrap iframe { position:absolute; inset:0; width:100%; height:100%; border:none; border-radius:1.25rem; }
+        .vol-overlay { display:none !important; }
+        .filters-scroll { display:flex; flex-wrap:nowrap; gap:8px; overflow-x:auto; padding-bottom:6px; -webkit-overflow-scrolling:touch; scrollbar-width:none; }
+        .filters-scroll::-webkit-scrollbar { display:none; }
+        .filters-scroll > * { flex-shrink:0; }
+        @keyframes audioSpin  { to { transform:rotate(360deg); } }
+        @keyframes audioPulse { 0%,100%{transform:scale(1);opacity:.7} 50%{transform:scale(1.1);opacity:1} }
+        @keyframes lw-splash-pulse { from { transform: scale(0.96); opacity: 0.8; } to { transform: scale(1.04); opacity: 1; } }
+
+        /* ── Toasts ── */
+        #toast-wrap { position:fixed; top:72px; right:16px; z-index:9999; display:flex; flex-direction:column; gap:8px; pointer-events:none; max-width:340px; }
+        .toast { pointer-events:auto; display:flex; align-items:center; gap:10px; padding:12px 16px; border-radius:14px; font-size:14px; font-weight:500;
+            background:var(--surface); color:var(--ink); border:1px solid var(--border); box-shadow:0 8px 24px rgba(0,0,0,.25); animation:toastIn .25s ease; }
+        @keyframes toastIn { from{opacity:0;transform:translateX(60px)} to{opacity:1;transform:none} }
+        .toast-success i { color:#22c55e; } .toast-error i { color:var(--accent); }
+        .toast-info i { color:var(--accent-2); } .toast-warning i { color:#f59e0b; }
+
+        /* ── Panneau favoris ── */
+        #fav-panel { display:none; position:fixed; top:68px; right:16px; width:320px; max-height:480px; z-index:9000;
+            background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); box-shadow:0 16px 48px rgba(0,0,0,.35); }
+        #fav-panel.open { display:flex; flex-direction:column; }
+        @media (max-width:480px) { #fav-panel { right:8px; left:8px; width:auto; } #toast-wrap { right:8px; left:8px; max-width:none; } }
+
+        @media (max-width:640px) { input, textarea, select { font-size:16px !important; } }
+    </style>
 
     {% block head %}{% endblock %}
 </head>
 
-<body class="theme-transition min-h-screen">
+<body class="min-h-screen">
 
-<!-- ══ SPLASH SCREEN ══ -->
-<div id="splash">
-    <div style="width:120px;height:120px;border-radius:24px;overflow:hidden;display:flex;align-items:center;justify-content:center;margin-bottom:24px;animation:splashPulse 1.2s ease-in-out infinite alternate;background:linear-gradient(135deg,#dc2626,#f97316);box-shadow:0 0 40px rgba(220,38,38,.5);">
-        <img src="/static/livewatch.png" alt="{{ app_name }}"
-             style="width:100px;height:100px;object-fit:contain;"
-             onerror="this.style.display='none';this.parentNode.innerHTML='<i class=\'fas fa-play\' style=\'color:#fff;font-size:2.5rem;\'></i>'">
+<!-- ══ ÉCRAN DE DÉMARRAGE (une fois par session) ══ -->
+<div id="splash" aria-hidden="true" class="fixed inset-0 z-[99999] hidden flex-col items-center justify-center bg-[#0f0f1a] transition-opacity duration-500" style="opacity:1">
+    <div class="mb-6 flex h-[120px] w-[120px] items-center justify-center rounded-3xl shadow-[0_0_40px_rgba(220,38,38,0.5)]"
+         style="background:linear-gradient(135deg,#dc2626,#f97316);animation:lw-splash-pulse 1.2s ease-in-out infinite alternate;">
+        {{ icon('cast', 48, 'text-white', 2) }}
     </div>
-    <span style="font-size:2rem;font-weight:900;color:#fff;letter-spacing:-1px;text-shadow:0 2px 16px rgba(0,0,0,.4);">{{ app_name }}</span>
-    <div style="display:flex;gap:8px;margin-top:20px;">
-        <div style="width:8px;height:8px;background:#dc2626;border-radius:50%;animation:livePulse 1s .0s infinite;"></div>
-        <div style="width:8px;height:8px;background:#f97316;border-radius:50%;animation:livePulse 1s .2s infinite;"></div>
-        <div style="width:8px;height:8px;background:#dc2626;border-radius:50%;animation:livePulse 1s .4s infinite;"></div>
+    <span class="text-3xl font-black tracking-tight text-white [text-shadow:0_2px_16px_rgba(0,0,0,0.4)]">{{ app_name }}</span>
+    <div class="mt-5 flex gap-2">
+        <span class="h-2 w-2 animate-pulse rounded-full bg-accent" style="animation-delay:0s"></span>
+        <span class="h-2 w-2 animate-pulse rounded-full bg-orange-500" style="animation-delay:.2s"></span>
+        <span class="h-2 w-2 animate-pulse rounded-full bg-accent" style="animation-delay:.4s"></span>
     </div>
 </div>
 <script>
 (function(){
-    var p=window.location.pathname;
-    var skip=p.startsWith('/admin')||p.startsWith('/api/')||p.startsWith('/proxy/')||p.startsWith('/static/')||p.startsWith('/ws')||p.startsWith('/watch/')||p.startsWith('/playlist/');
-    if(!skip && !sessionStorage.getItem('_lw_seen')){
-        sessionStorage.setItem('_lw_seen','1');
-        var s=document.getElementById('splash');
-        s.style.display='flex';
-        window.addEventListener('load',function(){
-            setTimeout(function(){s.style.opacity='0';setTimeout(function(){s.style.display='none';},500);},600);
-        });
-        setTimeout(function(){s.style.opacity='0';setTimeout(function(){s.style.display='none';},500);},2800);
+    var p = window.location.pathname;
+    var skip = p.startsWith('/admin') || p.startsWith('/api/') || p.startsWith('/proxy/') || p.startsWith('/static/') || p.startsWith('/ws') || p.startsWith('/watch/') || p.startsWith('/playlist/');
+    var seen = false;
+    try { seen = !!sessionStorage.getItem('_lw_seen'); } catch(e) {}
+    if (skip || seen) return;
+    try { sessionStorage.setItem('_lw_seen', '1'); } catch(e) {}
+    var s = document.getElementById('splash');
+    if (!s) return;
+    s.classList.remove('hidden'); s.classList.add('flex');
+    var closed = false;
+    function close() {
+        if (closed) return; closed = true;
+        s.style.opacity = '0';
+        setTimeout(function(){ s.classList.remove('flex'); s.classList.add('hidden'); }, 500);
     }
+    window.addEventListener('load', function(){ setTimeout(close, 600); });
+    setTimeout(close, 2000);
 })();
 </script>
 
-<!-- ══ NAVIGATION ══ -->
-<nav style="position:sticky;top:0;z-index:5000;background:#fff;border-bottom:1px solid #e5e7eb;box-shadow:0 1px 8px rgba(0,0,0,.06);" class="theme-transition">
-    <style>
-    html.dark nav { background:#1f2937 !important; border-color:#374151 !important; }
-    </style>
-    <div style="max-width:1400px;margin:0 auto;padding:0 12px;height:64px;display:flex;align-items:center;justify-content:space-between;gap:8px;">
+<div class="flex min-h-screen bg-bg text-ink">
 
-        <!-- Logo -->
-        <a href="/" style="display:flex;align-items:center;gap:8px;text-decoration:none;flex-shrink:0;min-width:0;">
-            <div style="width:36px;height:36px;background:linear-gradient(135deg,#dc2626,#f97316);border-radius:50%;display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;">
-                <img src="/static/livewatch.png" alt="{{ app_name }}" style="height:26px;width:26px;object-fit:contain;"
-                     onerror="this.style.display='none';this.parentNode.innerHTML+='<i class=\'fas fa-play\' style=\'color:#fff;font-size:.9rem;\'></i>'">
-            </div>
-            <span style="font-size:1.2rem;font-weight:900;background:linear-gradient(135deg,#dc2626,#f97316);-webkit-background-clip:text;-webkit-text-fill-color:transparent;white-space:nowrap;">{{ app_name }}</span>
+    <!-- ══ SIDEBAR (desktop) ══ -->
+    <aside class="hidden w-64 shrink-0 flex-col bg-[#0A0E1A] px-4 py-6 lg:sticky lg:top-0 lg:flex lg:h-screen lg:overflow-y-auto">
+        <a href="/" class="mb-8 flex items-center gap-2 px-2">
+            <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-accent">{{ icon('cast', 16, 'text-white') }}</span>
+            <span class="font-display text-lg font-semibold text-white">{{ app_name }}</span>
         </a>
-
-        <!-- Nav links desktop uniquement -->
-        <div style="display:flex;align-items:center;gap:4px;flex:1;justify-content:center;" class="nav-desktop-links">
-            <a href="/?category=sports" class="nav-link">Sports</a>
-            <a href="/?category=news" class="nav-link">News</a>
-            <a href="/?category=radio" class="nav-link">Radio</a>
-            <a href="/?category=iptv" class="nav-link">Chaînes TV</a>
-            <a href="/?category=entertainment" class="nav-link">YouTube</a>
+        <nav class="flex flex-1 flex-col gap-1">
+            {% for href, label, ic, active in nav_main %}
+            <a href="{{ href }}" class="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors {{ 'bg-white/10 text-white' if active else 'text-white/60 hover:bg-white/5 hover:text-white' }}">
+                {{ icon(ic, 18, '', 2) }}
+                <span>{{ label }}</span>
+                {% if href == '/events' %}<span class="ann-badge ml-auto hidden rounded-full bg-accent px-1.5 text-[10px] font-bold leading-4 text-white"></span>{% endif %}
+            </a>
+            {% endfor %}
+        </nav>
+        <div class="mt-4 flex flex-col gap-1 border-t border-white/10 pt-4">
+            {% for href, label, ic, active in nav_sec %}
+            <a href="{{ href }}" class="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors {{ 'bg-white/10 text-white' if active else 'text-white/60 hover:bg-white/5 hover:text-white' }}">
+                {{ icon(ic, 18, '', 2) }}
+                <span>{{ label }}</span>
+            </a>
+            {% endfor %}
         </div>
+    </aside>
 
-        <!-- Zone actions droite -->
-        <div style="display:flex;align-items:center;gap:4px;flex-shrink:0;">
-
-            <!-- Recherche — visible partout -->
-            <a href="/search" style="display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:50%;color:inherit;text-decoration:none;" title="Rechercher">
-                <i class="fas fa-search"></i>
+    <!-- ══ TIROIR MOBILE ══ -->
+    <div id="lw-drawer" class="fixed inset-0 z-50 hidden lg:hidden">
+        <div class="absolute inset-0 bg-black/50" onclick="lwToggleDrawer(false)"></div>
+        <aside class="absolute left-0 top-0 flex h-full w-72 flex-col bg-[#0A0E1A] px-4 py-6">
+            <a href="/" class="mb-8 flex items-center gap-2 px-2">
+                <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-accent">{{ icon('cast', 16, 'text-white') }}</span>
+                <span class="font-display text-lg font-semibold text-white">{{ app_name }}</span>
             </a>
-
-            <!-- Go Live — visible partout, texte masqué sur mobile -->
-            <a href="/go-live" style="display:flex;align-items:center;gap:5px;background:#dc2626;color:#fff;padding:7px 12px;border-radius:99px;text-decoration:none;font-size:13px;font-weight:700;transition:background .2s;white-space:nowrap;">
-                <i class="fas fa-circle" style="font-size:8px;animation:livePulse 1s infinite;"></i>
-                <span class="nav-golive-label">Go Live</span>
+            <nav class="flex flex-1 flex-col gap-1">
+                {% for href, label, ic, active in nav_main + nav_sec %}
+                <a href="{{ href }}" class="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors {{ 'bg-white/10 text-white' if active else 'text-white/60 hover:bg-white/5 hover:text-white' }}">
+                    {{ icon(ic, 18, '', 2) }}
+                    <span>{{ label }}</span>
+                    {% if href == '/events' %}<span class="ann-badge ml-auto hidden rounded-full bg-accent px-1.5 text-[10px] font-bold leading-4 text-white"></span>{% endif %}
+                </a>
+                {% endfor %}
+            </nav>
+            <a href="/static/livewatch.apk" download class="mt-2 flex items-center gap-3 rounded-xl border-t border-white/10 px-3 py-2.5 pt-4 text-sm font-medium text-white/60 hover:text-white">
+                {{ icon('download', 18, '', 2) }}
+                Télécharger l'appli
             </a>
-
-            <!-- Thème — visible partout -->
-            <button onclick="toggleTheme()" id="theme-btn" style="display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:50%;border:none;background:transparent;cursor:pointer;color:inherit;" title="Thème">
-                <i class="fas fa-sun" id="theme-icon"></i>
-            </button>
-
-            <!-- Favoris — masqué sur mobile (accessible via menu hamburger) -->
-            <button onclick="toggleFavPanel()" class="nav-desktop-only" style="display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:50%;border:none;background:transparent;cursor:pointer;color:inherit;" title="Favoris">
-                <i class="fas fa-star" style="color:#f59e0b;"></i>
-            </button>
-
-            <!-- Événements — masqué sur mobile -->
-            <a href="/events" class="nav-desktop-only" style="display:flex;align-items:center;gap:5px;text-decoration:none;font-size:13px;font-weight:600;color:inherit;padding:6px 8px;border-radius:8px;position:relative;">
-                <i class="fas fa-calendar-alt"></i>
-                <span id="ann-badge" style="display:none;position:absolute;top:-2px;right:-4px;background:#dc2626;color:#fff;font-size:10px;font-weight:800;padding:1px 5px;border-radius:99px;line-height:1.4;"></span>
-            </a>
-
-            <!-- Paramètres — masqué sur mobile -->
-            <a href="/settings" class="nav-desktop-only" style="display:flex;align-items:center;gap:5px;text-decoration:none;font-size:13px;font-weight:600;color:inherit;padding:6px 8px;border-radius:8px;">
-                <i class="fas fa-cog"></i>
-            </a>
-
-            <!-- Admin — masqué sur mobile -->
-            <a href="/admin" class="nav-desktop-only" style="display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:50%;text-decoration:none;font-size:16px;background:rgba(55,65,81,.1);border:1px solid #e5e7eb;" title="Administration">
-                <i class="fas fa-lock"></i>
-            </a>
-
-            <!-- Hamburger — toujours visible à droite en dernier -->
-            <button id="ham-btn" onclick="toggleMobMenu()" aria-label="Menu" title="Menu">
-                <i class="fas fa-bars" id="ham-icon"></i>
-            </button>
-        </div>
-
+        </aside>
     </div>
-    <style>
-        @media (max-width:900px) {
-            .nav-desktop-only { display:none !important; }
-            .nav-golive-label { display:none !important; }
-        }
-    </style>
-</nav>
-<style>
-.nav-link { display:inline-flex; align-items:center; gap:4px; padding:6px 12px; border-radius:8px; text-decoration:none; font-size:13px; font-weight:600; color:inherit; transition:background .15s; }
-.nav-link:hover { background:rgba(220,38,38,.08); color:#dc2626; }
-html.dark .nav-link:hover { background:rgba(248,113,113,.1); color:#f87171; }
-</style>
 
-<!-- ══ MENU MOBILE ══ -->
-<div id="mob-menu">
-    <a href="/?category=sports">Sports</a>
-    <a href="/?category=news">News</a>
-    <a href="/?category=radio">Radio</a>
-    <a href="/?category=iptv">Chaînes TV</a>
-    <a href="/?category=entertainment">YouTube</a>
-    <a href="/events">Événements</a>
-    <a href="/go-live" style="background:#dc2626;color:#fff !important;border-radius:10px;">Go Live</a>
-    <a href="/search">Rechercher</a>
-    <a href="/settings">Paramètres</a>
-    <a href="/admin">Administration</a>
+    <div class="flex min-w-0 flex-1 flex-col">
+
+        <!-- ══ HEADER ══ -->
+        <header class="sticky top-0 z-30 flex items-center gap-3 border-b border-border bg-bg/85 px-4 py-3 backdrop-blur-md sm:px-6">
+            <button type="button" aria-label="Ouvrir le menu" onclick="lwToggleDrawer(true)"
+                    class="flex h-9 w-9 items-center justify-center rounded-lg text-ink-muted hover:bg-surface-2 lg:hidden">
+                {{ icon('menu', 20) }}
+            </button>
+
+            <form method="GET" action="/search" class="relative min-w-0 flex-1 max-w-md">
+                {{ icon('search', 16, 'pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted') }}
+                <input name="q" type="search" placeholder="Rechercher une chaîne, un direct…" value="{{ query if (query is defined and query) else '' }}"
+                       class="w-full rounded-full border border-border bg-surface py-2 pl-9 pr-4 text-sm outline-none placeholder:text-ink-muted focus-visible:border-accent-2">
+            </form>
+
+            <div class="ml-auto flex items-center gap-2.5">
+                <button type="button" onclick="toggleFavPanel()" title="Mes favoris" aria-label="Mes favoris"
+                        class="hidden h-9 w-9 items-center justify-center rounded-lg text-ink-muted hover:bg-surface-2 hover:text-ink sm:flex">
+                    {{ icon('star', 18) }}
+                </button>
+                <a href="/static/livewatch.apk" download title="Télécharger l'application Android"
+                   class="hidden h-9 w-9 items-center justify-center rounded-lg text-ink-muted hover:bg-surface-2 hover:text-ink sm:flex">
+                    {{ icon('download', 18) }}
+                </a>
+                <div class="flex items-center rounded-full border border-border bg-surface p-1" id="lw-theme-toggle">
+                    {% for m, ic, lbl in [('light','sun','Clair'),('dark','moon','Sombre'),('system','monitor','Système')] %}
+                    <button type="button" aria-label="{{ lbl }}" aria-pressed="false" data-mode="{{ m }}" onclick="lwSetThemeMode('{{ m }}')"
+                            class="lw-theme-btn flex h-7 w-7 items-center justify-center rounded-full text-ink-muted transition-colors hover:text-ink">
+                        {{ icon(ic, 14) }}
+                    </button>
+                    {% endfor %}
+                </div>
+                <a href="/go-live" class="hidden items-center gap-1.5 rounded-full bg-accent px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 sm:flex">
+                    {{ icon('cast', 15) }} Go Live
+                </a>
+            </div>
+        </header>
+
+        <!-- ══ CONTENU ══ -->
+        <main class="min-w-0 flex-1 px-4 pt-5 pb-8 sm:px-6">
+            {% block content %}{% endblock %}
+        </main>
+
+        <!-- ══ PIED DE PAGE ══ -->
+        <footer class="border-t border-border px-4 pt-8 pb-28 sm:px-6 lg:pb-8">
+            <div class="grid gap-8 md:grid-cols-[2fr_1fr_1fr]">
+                <div>
+                    <div class="mb-3 flex items-center gap-2">
+                        <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-accent">{{ icon('cast', 16, 'text-white') }}</span>
+                        <span class="font-display text-lg font-semibold">{{ app_name }}</span>
+                    </div>
+                    <p class="max-w-md text-sm leading-relaxed text-ink-muted">Plateforme de streaming en ligne. Regardez des chaînes de télévision du monde entier, en direct et gratuitement.</p>
+                    <p class="mt-2 text-xs text-ink-muted">Développé par : <strong class="font-semibold text-accent">BEN CORPORATION</strong></p>
+                    <div class="card mt-4 max-w-md p-4">
+                        <p class="text-sm font-semibold">Ce site est gratuit.</p>
+                        <p class="mt-1 text-xs text-ink-muted">Si vous aimez le projet, vous pouvez soutenir le développement.</p>
+                        <p class="mt-2 text-xs font-medium">Mon numéro : <strong>+243998655061</strong></p>
+                        <p class="mt-1 break-all text-[11px] text-ink-muted">USDT : <code class="rounded bg-surface-2 px-1.5 py-0.5 text-[10px]">0x30B46539266EC13A2D3720bf0289d927647fdB3E</code></p>
+                    </div>
+                </div>
+                <div>
+                    <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-ink-muted">Navigation</p>
+                    <div class="flex flex-col gap-2.5 text-sm text-ink-muted">
+                        <a href="/" class="hover:text-ink">Accueil</a>
+                        <a href="/events" class="hover:text-ink">Événements</a>
+                        <a href="/go-live" class="hover:text-ink">Go Live</a>
+                        <a href="/settings" class="hover:text-ink">Paramètres</a>
+                        <a href="/about" class="hover:text-ink">À propos</a>
+                    </div>
+                </div>
+                <div>
+                    <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-ink-muted">Légal</p>
+                    <div class="flex flex-col gap-2.5 text-sm text-ink-muted">
+                        <a href="/terms" class="hover:text-ink">Conditions d'utilisation</a>
+                        <a href="/privacy" class="hover:text-ink">Confidentialité</a>
+                        <a href="/search" class="hover:text-ink">Recherche</a>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-8 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-5 text-xs text-ink-muted">
+                <p>2026 {{ app_name }} — BEN CORPORATION · Tous droits réservés</p>
+                <div class="flex items-center gap-3">
+                    <span class="inline-flex items-center gap-1.5 rounded-full bg-accent px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white"><span class="live-dot bg-white"></span>LIVE</span>
+                    <span>v2.0</span>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <!-- ══ BARRE DU BAS (mobile) ══ -->
+    <nav class="fixed inset-x-0 bottom-0 z-40 flex items-center justify-around border-t border-border bg-surface/95 px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur-md lg:hidden">
+        {% set bottom = [
+            ('/', 'Accueil', 'house', (_p == '/' and not _cat and not _pl and _view != 'countries'), false),
+            ('/search', 'Recherche', 'search', _p.startswith('/search'), false),
+            ('/go-live', 'Diffuser', 'cast', _p.startswith('/go-live'), true),
+            ('/events', 'Events', 'calendar', _p.startswith('/events'), false),
+            ('/profile', 'Profil', 'user', _p.startswith('/profile'), false),
+        ] %}
+        {% for href, label, ic, active, raised in bottom %}
+        <a href="{{ href }}" class="flex flex-1 flex-col items-center gap-1 py-2.5 text-[11px] font-medium {{ 'text-accent-2' if active else 'text-ink-muted' }}">
+            {% if raised %}
+            <span class="-mt-6 flex h-12 w-12 items-center justify-center rounded-full bg-accent text-white shadow-lg">{{ icon(ic, 20) }}</span>
+            {% else %}
+            <span class="relative">{{ icon(ic, 20, 'text-accent-2' if active else '') }}{% if href == '/events' %}<span class="ann-badge absolute -top-1 -right-2 hidden rounded-full bg-accent px-1 text-[9px] font-bold leading-3.5 text-white"></span>{% endif %}</span>
+            {{ label }}
+            {% endif %}
+        </a>
+        {% endfor %}
+    </nav>
 </div>
-<script>
-function toggleMobMenu(){
-    var m=document.getElementById('mob-menu');
-    var i=document.getElementById('ham-icon');
-    m.classList.toggle('open');
-    i.className = m.classList.contains('open') ? 'fas fa-times' : 'fas fa-bars';
-}
-// Fermer le menu au clic sur un lien
-document.getElementById('mob-menu').querySelectorAll('a').forEach(function(a){
-    a.addEventListener('click',function(){ document.getElementById('mob-menu').classList.remove('open'); });
-});
-</script>
 
 <!-- ══ FAVORIS PANEL ══ -->
 <div id="fav-panel">
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid #e5e7eb;flex-shrink:0;">
-        <strong>Mes favoris</strong>
-        <button onclick="toggleFavPanel()" style="background:none;border:none;cursor:pointer;font-size:18px;color:#6b7280;">×</button>
+    <div class="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
+        <strong class="font-display text-base font-semibold">Mes favoris</strong>
+        <button type="button" onclick="toggleFavPanel()" aria-label="Fermer" class="flex h-8 w-8 items-center justify-center rounded-lg text-ink-muted hover:bg-surface-2 hover:text-ink">{{ icon('x', 16) }}</button>
     </div>
-    <div id="fav-list" class="custom-scroll" style="overflow-y:auto;flex:1;padding:8px;"></div>
+    <div id="fav-list" class="custom-scroll flex-1 overflow-y-auto p-2"></div>
 </div>
 
 <!-- ══ TOAST CONTAINER ══ -->
 <div id="toast-wrap"></div>
 
-<!-- ══ MAIN CONTENT ══ -->
-<main class="main-container" style="max-width:1400px;margin:0 auto;padding:20px 16px;">
-    {% block content %}{% endblock %}
-</main>
-
-<!-- ══ FOOTER ══ -->
-<footer class="theme-transition" style="border-top:1px solid #e5e7eb;margin-top:64px;">
-    <style>
-    html.dark footer { background:#111827 !important; border-color:#374151 !important; }
-    html.dark footer .footer-col strong { color:#f9fafb !important; }
-    html.dark footer .footer-col p, html.dark footer .footer-col span, html.dark footer .footer-col a { color:#9ca3af !important; }
-    html.dark footer .footer-divider { border-color:#374151 !important; }
-    html.dark footer .footer-copyright { color:#6b7280 !important; }
-    html.dark .footer-support-box { background:#1f2937 !important; border-color:#374151 !important; }
-    html.dark .footer-support-box p { color:#d1d5db !important; }
-    html.dark .footer-support-box strong { color:#f9fafb !important; }
-    html.dark .footer-support-box code { background:#374151 !important; color:#d1d5db !important; }
-    </style>
-    <div style="max-width:1400px;margin:0 auto;padding:48px 16px 28px;">
-        <div class="footer-grid" style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:40px;margin-bottom:36px;">
-            <style>@media(max-width:768px){.footer-grid{grid-template-columns:1fr!important;}}</style>
-            <!-- Col 1 : Brand -->
-            <div class="footer-col">
-                <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
-                    <div style="width:36px;height:36px;background:linear-gradient(135deg,#dc2626,#f97316);border-radius:10px;display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;">
-                        <img src="/static/livewatch.png" alt="{{ app_name }}" style="width:26px;height:26px;object-fit:contain;"
-                             onerror="this.style.display='none';this.parentNode.innerHTML+='<i class=\'fas fa-play\' style=\'color:#fff;font-size:.8rem;\'></i>'">
-                    </div>
-                    <strong style="font-size:1.2rem;font-weight:900;">{{ app_name }}</strong>
-                </div>
-                <p style="font-size:13px;color:#6b7280;line-height:1.7;margin:0 0 8px;">Plateforme de streaming en ligne. Regardez des chaînes de télévision du monde entier, en direct et gratuitement.</p>
-                <p style="font-size:12px;color:#9ca3af;margin:0 0 14px;">Développé par : <strong style="color:#dc2626;font-weight:800;">BEN CORPORATION</strong></p>
-                <div class="footer-support-box" style="background:#fefce8;border:1px solid #fde68a;border-radius:12px;padding:14px 16px;">
-                    <p style="font-size:13px;color:#78350f;font-weight:800;margin:0 0 6px;">Ce site est gratuit.</p>
-                    <p style="font-size:12px;color:#92400e;margin:0 0 8px;line-height:1.5;">Si vous aimez le projet, vous pouvez soutenir le développement.</p>
-                    <p style="font-size:12px;color:#92400e;font-weight:600;margin:0 0 4px;">Mon numéro : <strong>+243998655061</strong></p>
-                    <p style="font-size:11px;color:#92400e;margin:0;word-break:break-all;">USDT : <code style="font-size:10px;background:rgba(0,0,0,.07);padding:2px 5px;border-radius:4px;font-family:monospace;">0x30B46539266EC13A2D3720bf0289d927647fdB3E</code></p>
-                </div>
-            </div>
-            <!-- Col 2 : Navigation -->
-            <div class="footer-col">
-                <strong style="display:block;margin-bottom:16px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:#9ca3af;">Navigation</strong>
-                <div style="display:flex;flex-direction:column;gap:10px;">
-                    <a href="/" style="font-size:13px;color:#6b7280;text-decoration:none;display:flex;align-items:center;gap:8px;transition:color .15s;" onmouseover="this.style.color='#dc2626'" onmouseout="this.style.color=''">Accueil</a>
-                    <a href="/events" style="font-size:13px;color:#6b7280;text-decoration:none;display:flex;align-items:center;gap:8px;transition:color .15s;" onmouseover="this.style.color='#dc2626'" onmouseout="this.style.color=''">Événements</a>
-                    <a href="/go-live" style="font-size:13px;color:#6b7280;text-decoration:none;display:flex;align-items:center;gap:8px;transition:color .15s;" onmouseover="this.style.color='#dc2626'" onmouseout="this.style.color=''">Go Live</a>
-                    <a href="/settings" style="font-size:13px;color:#6b7280;text-decoration:none;display:flex;align-items:center;gap:8px;transition:color .15s;" onmouseover="this.style.color='#dc2626'" onmouseout="this.style.color=''">Paramètres</a>
-                    <a href="/about" style="font-size:13px;color:#6b7280;text-decoration:none;display:flex;align-items:center;gap:8px;transition:color .15s;" onmouseover="this.style.color='#dc2626'" onmouseout="this.style.color=''">À propos</a>
-                </div>
-            </div>
-            <!-- Col 3 : Légal -->
-            <div class="footer-col">
-                <strong style="display:block;margin-bottom:16px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:#9ca3af;">Légal</strong>
-                <div style="display:flex;flex-direction:column;gap:10px;">
-                    <a href="/terms" style="font-size:13px;color:#6b7280;text-decoration:none;display:flex;align-items:center;gap:8px;transition:color .15s;" onmouseover="this.style.color='#dc2626'" onmouseout="this.style.color=''">Conditions d'utilisation</a>
-                    <a href="/privacy" style="font-size:13px;color:#6b7280;text-decoration:none;display:flex;align-items:center;gap:8px;transition:color .15s;" onmouseover="this.style.color='#dc2626'" onmouseout="this.style.color=''">Confidentialité</a>
-                    <a href="/search" style="font-size:13px;color:#6b7280;text-decoration:none;display:flex;align-items:center;gap:8px;transition:color .15s;" onmouseover="this.style.color='#dc2626'" onmouseout="this.style.color=''">Recherche</a>
-                </div>
-                </div>
-            </div>
-        </div>
-        <div class="footer-divider" style="border-top:1px solid #e5e7eb;padding-top:20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
-            <p class="footer-copyright" style="font-size:12px;color:#9ca3af;margin:0;">2026 {{ app_name }} — BEN CORPORATION · Tous droits réservés</p>
-            <div style="display:flex;align-items:center;gap:12px;">
-                <span style="font-size:11px;color:#d1d5db;padding:3px 10px;background:rgba(220,38,38,.08);border-radius:99px;color:#dc2626;font-weight:700;">LIVE</span>
-                <span style="font-size:11px;color:#9ca3af;">v2.0 </span>
-            </div>
-        </div>
-    </div>
-</footer>
-
 <!-- ══ SCRIPTS GLOBAUX ══ -->
 <script>
-// ─────────────────────────────────────────────
-// THÈME
-// ─────────────────────────────────────────────
-function _applyTheme(t) {
-    var html = document.documentElement;
-    var icon = document.getElementById('theme-icon');
-    if (t === 'dark') {
-        html.classList.add('dark');
-        if (icon) { icon.className = 'fas fa-moon'; }
-    } else {
-        html.classList.remove('dark');
-        if (icon) { icon.className = 'fas fa-sun'; }
-    }
-    localStorage.setItem('lw_theme', t);
+window.LW_ICONS = {{ ICONS|tojson }};
+function lwIcon(name, size, cls) {
+    size = size || 16;
+    return '<svg xmlns="http://www.w3.org/2000/svg" width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lw-icon ' + (cls || '') + '" aria-hidden="true">' + (window.LW_ICONS[name] || '') + '</svg>';
 }
 
-function toggleTheme() {
-    var isDark = document.documentElement.classList.contains('dark');
-    var newTheme = isDark ? 'light' : 'dark';
-    _applyTheme(newTheme);
+// ─────────────────────────────────────────────
+// MENU MOBILE
+// ─────────────────────────────────────────────
+function lwToggleDrawer(open) {
+    var d = document.getElementById('lw-drawer');
+    if (!d) return;
+    d.classList.toggle('hidden', !open);
+}
+function toggleMobMenu() { var d = document.getElementById('lw-drawer'); lwToggleDrawer(d && d.classList.contains('hidden')); }
+
+// ─────────────────────────────────────────────
+// THÈME  (clair / sombre / système)
+// ─────────────────────────────────────────────
+function _applyThemeClass(dark) {
+    var html = document.documentElement;
+    html.classList.toggle('dark', dark);
+    html.style.colorScheme = dark ? 'dark' : 'light';
+}
+function _applyTheme(t) {
+    _applyThemeClass(t === 'dark');
+    try { localStorage.setItem('lw_theme', t); } catch(e) {}
+}
+function _lwThemeMode() {
+    var t = null;
+    try { t = localStorage.getItem('lw_theme'); } catch(e) {}
+    return (t === 'light' || t === 'dark' || t === 'system') ? t : 'dark';
+}
+function _lwRefreshThemeButtons() {
+    var mode = _lwThemeMode();
+    document.querySelectorAll('.lw-theme-btn').forEach(function(b) {
+        var on = b.getAttribute('data-mode') === mode;
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        b.classList.toggle('bg-accent-2', on);
+        b.classList.toggle('text-white', on);
+        b.classList.toggle('text-ink-muted', !on);
+    });
+}
+function lwSetThemeMode(mode) {
+    if (mode === 'system') {
+        _applyThemeClass(window.matchMedia('(prefers-color-scheme:dark)').matches);
+        try { localStorage.setItem('lw_theme', 'system'); } catch(e) {}
+    } else {
+        _applyTheme(mode);
+    }
+    _lwRefreshThemeButtons();
     // Persister en base
     fetch('/api/settings/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ theme: newTheme })
+        body: JSON.stringify({ theme: mode === 'system' ? 'auto' : mode })
     }).catch(function(){});
 }
-
-// Appliquer l'icône correcte au chargement
-(function(){
-    var t = localStorage.getItem('lw_theme');
-    var isDark = t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme:dark)').matches);
-    var icon = document.getElementById('theme-icon');
-    if (icon) icon.className = isDark ? 'fas fa-moon' : 'fas fa-sun';
-})();
+function toggleTheme() { lwSetThemeMode(document.documentElement.classList.contains('dark') ? 'light' : 'dark'); }
+new MutationObserver(_lwRefreshThemeButtons).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+document.addEventListener('DOMContentLoaded', _lwRefreshThemeButtons);
 
 // ─────────────────────────────────────────────
 // TOASTS
@@ -8571,8 +9399,8 @@ function showNotification(msg, type) {
     if (!wrap) return;
     var toast = document.createElement('div');
     toast.className = 'toast toast-' + type;
-    var icon = { success:'fa-check-circle', error:'fa-times-circle', info:'fa-info-circle', warning:'fa-exclamation-triangle' }[type] || 'fa-info-circle';
-    toast.innerHTML = '<i class="fas ' + icon + '"></i><span>' + msg + '</span>';
+    var icon = { success:'circle-check', error:'circle-x', info:'info', warning:'triangle-alert' }[type] || 'info';
+    toast.innerHTML = '<i class="inline-flex">' + lwIcon(icon, 18) + '</i><span>' + msg + '</span>';
     wrap.appendChild(toast);
     setTimeout(function() {
         toast.style.opacity = '0';
@@ -8599,23 +9427,23 @@ function toggleFavPanel() {
 async function _loadFavs() {
     var list = document.getElementById('fav-list');
     if (!list) return;
-    list.innerHTML = '<p style="padding:12px;font-size:13px;color:#9ca3af;text-align:center;">Chargement...</p>';
+    list.innerHTML = '<p class="p-3 text-center text-sm text-ink-muted">Chargement...</p>';
     try {
         var r = await fetch('/api/favorites', { credentials:'include' });
         var favs = await r.json();
         if (!favs.length) {
-            list.innerHTML = '<p style="padding:12px;font-size:13px;color:#9ca3af;text-align:center;">Aucun favori<br><small>Cliquez sur une chaîne</small></p>';
+            list.innerHTML = '<p class="p-3 text-center text-sm text-ink-muted">Aucun favori<br><small>Cliquez sur une chaîne</small></p>';
             return;
         }
         list.innerHTML = favs.map(function(f){
-            return '<a href="'+f.url+'" style="display:flex;align-items:center;gap:10px;padding:8px;border-radius:10px;text-decoration:none;color:inherit;transition:background .15s;" onmouseover="this.style.background=\'rgba(220,38,38,.06)\'" onmouseout="this.style.background=\'\'">'+
-                '<div style="width:38px;height:38px;border-radius:8px;overflow:hidden;background:#f3f4f6;flex-shrink:0;display:flex;align-items:center;justify-content:center;">'+
-                (f.logo ? '<img src="'+f.logo+'" style="width:100%;height:100%;object-fit:contain;padding:4px;" onerror="this.style.display=\'none\'">' : '<i class="fas fa-tv" style="color:#9ca3af;"></i>')+
-                '</div><div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+f.title+'</div>'+
-                '<div style="font-size:11px;color:#9ca3af;">'+(f.type==='user'&&f.is_live?'EN DIRECT':f.category||f.type)+'</div></div></a>';
+            return '<a href="'+f.url+'" class="flex items-center gap-3 rounded-xl p-2 transition-colors hover:bg-surface-2">' +
+                '<div class="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-surface-2">' +
+                (f.logo ? '<img src="'+f.logo+'" class="h-full w-full object-contain p-1" onerror="this.style.display=\'none\'">' : '<i class="fas fa-tv text-ink-muted"></i>') +
+                '</div><div class="min-w-0 flex-1"><div class="truncate text-sm font-semibold">'+f.title+'</div>' +
+                '<div class="text-[11px] text-ink-muted">'+(f.type==='user'&&f.is_live?'EN DIRECT':f.category||f.type)+'</div></div></a>';
         }).join('');
     } catch(e) {
-        list.innerHTML = '<p style="padding:12px;font-size:13px;color:#dc2626;text-align:center;">Erreur chargement</p>';
+        list.innerHTML = '<p class="p-3 text-center text-sm text-accent">Erreur chargement</p>';
     }
 }
 
@@ -8642,10 +9470,10 @@ function _loadAnnBadge() {
     fetch('/api/announcements/count', {credentials:'include'})
         .then(function(r){return r.json();})
         .then(function(d){
-            var badge = document.getElementById('ann-badge');
-            if (!badge) return;
-            if (d.count > 0) { badge.textContent = d.count; badge.style.display = 'inline'; }
-            else { badge.style.display = 'none'; }
+            document.querySelectorAll('.ann-badge').forEach(function(badge){
+                if (d.count > 0) { badge.textContent = d.count; badge.classList.remove('hidden'); }
+                else { badge.classList.add('hidden'); }
+            });
         }).catch(function(){});
 }
 
@@ -8667,7 +9495,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
 {% block scripts %}{% endblock %}
 </body>
-</html>'''
+</html>
+'''
 
     # ══════════════════════════════════════════════════════════════════
     # INDEX TEMPLATE
@@ -8675,317 +9504,301 @@ document.addEventListener('DOMContentLoaded', function() {
     INDEX_TEMPLATE = r'''{% extends "base.html" %}
 {% block title %}{{ app_name }} — Streaming TV en direct{% endblock %}
 {% block content %}
-<div class="page-gap" style="display:flex;flex-direction:column;gap:40px;">
+{% from 'icons.html' import icon %}
+{%- set view = request.query_params.get('view', '') if request is defined else '' -%}
+{% from 'components.html' import stream_card, country_card, cat_meta, cont_map %}
 
-<!-- ── HERO ── -->
-<section class="hero-section" style="background:linear-gradient(135deg,#b91c1c 0%,#dc2626 40%,#f97316 100%);border-radius:20px;padding:48px 32px;color:#fff;position:relative;overflow:hidden;">
-    <div style="position:absolute;inset:0;opacity:.07;font-size:12rem;display:flex;align-items:center;justify-content:flex-end;padding-right:24px;pointer-events:none;"></div>
-    <div style="position:relative;max-width:600px;">
-        <h1 style="font-size:2.2rem;font-weight:900;margin:0 0 12px;line-height:1.15;">Bienvenue sur <span style="white-space:nowrap;">{{ app_name }}</span></h1>
-        <p style="font-size:1rem;color:rgba(255,255,255,.85);margin:0 0 24px;line-height:1.6;">Regardez des milliers de chaînes de télévision du monde entier en direct et gratuitement.</p>
-        <div class="hero-btns" style="display:flex;flex-wrap:wrap;gap:10px;">
-            <a href="#live" style="background:#fff;color:#dc2626;padding:10px 22px;border-radius:99px;font-weight:700;font-size:14px;text-decoration:none;display:flex;align-items:center;gap:6px;">
-                <i class="fas fa-circle" style="font-size:9px;animation:livePulse 1s infinite;color:#dc2626;"></i> En direct
-            </a>
-            <a href="#tv" style="background:rgba(0,0,0,.25);color:#fff;padding:10px 22px;border-radius:99px;font-weight:700;font-size:14px;text-decoration:none;border:1px solid rgba(255,255,255,.3);">
-                Chaînes TV
-            </a>
-            <a href="/events" style="background:rgba(0,0,0,.25);color:#fff;padding:10px 22px;border-radius:99px;font-weight:700;font-size:14px;text-decoration:none;border:1px solid rgba(255,255,255,.3);">
-                Événements
-            </a>
-            <a href="/go-live" style="background:rgba(0,0,0,.25);color:#fff;padding:10px 22px;border-radius:99px;font-weight:700;font-size:14px;text-decoration:none;border:1px solid rgba(255,255,255,.3);">
-                <i class="fas fa-video"></i> Go Live
-            </a>
+
+{%- set cur_meta = cat_meta.get(current_category) if current_category else none -%}
+
+{# ── Bandeau pays (CountryRail) ── #}
+{% macro country_rail() -%}
+{%- if pl_countries -%}
+<div class="-mx-1 flex gap-3 overflow-x-auto px-1 pb-1" style="scrollbar-width:none">
+    {% for pl in (pl_countries|sort(attribute='channel_count', reverse=true)|list)[:10] %}{{ country_card(pl, 'w-32') }}{% endfor %}
+    <a href="/?view=countries" class="flex min-h-[90px] w-32 shrink-0 flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-border text-xs font-medium text-ink-muted hover:text-ink">
+        Voir tous les pays
+        <span class="text-[10px] text-ink-muted/70">({{ pl_countries|length }})</span>
+    </a>
+</div>
+{%- endif -%}
+{%- endmacro %}
+
+<div class="mx-auto max-w-6xl">
+
+{% if view == 'countries' and not selected_playlist %}
+    {# ═══════════ TOUS LES PAYS ═══════════ #}
+    <div class="mb-5">
+        <h1 class="font-display text-2xl font-semibold sm:text-3xl">Chaînes Télévisions par pays</h1>
+        <p class="mt-1 text-sm text-ink-muted">{{ pl_countries|length if pl_countries else 0 }} pays disponibles</p>
+    </div>
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div class="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1" style="scrollbar-width:none" id="cont-filters">
+            {% for cid, lbl in [('all','Tous'),('AF','Afrique'),('EU','Europe'),('AS','Asie'),('NA','Am. Nord'),('SA','Am. Sud'),('OC','Océanie'),('ME','Moyen-Orient')] %}
+            <button type="button" onclick="filterCont('{{ cid }}',this)" data-cont="{{ cid }}"
+                    class="cont-btn shrink-0 rounded-full border px-4 py-1.5 text-xs font-semibold transition-colors {{ 'border-accent bg-accent text-white' if cid == 'all' else 'border-border text-ink-muted hover:text-ink' }}">{{ lbl }}</button>
+            {% endfor %}
         </div>
+        <select id="country-sort" onchange="sortCountries(this.value)" class="shrink-0 rounded-full border border-border bg-surface px-3.5 py-1.5 text-xs font-medium outline-none">
+            <option value="alpha">Trier : alphabétique</option>
+            <option value="count">Trier : nombre de chaînes</option>
+        </select>
     </div>
-</section>
+    {% if pl_countries %}
+    <div class="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-6" id="countries-grid">
+        {% for pl in pl_countries %}{{ country_card(pl) }}{% endfor %}
+    </div>
+    <div id="countries-empty" class="card hidden p-10 text-center text-sm text-ink-muted">Aucun pays dans cette catégorie.</div>
+    {% else %}
+    <div class="card p-10 text-center text-sm text-ink-muted">Aucune chaîne disponible. <a href="/admin/dashboard" class="text-accent-2 hover:underline">Lancer une synchronisation</a></div>
+    {% endif %}
 
-<!-- ── CATÉGORIES ── -->
-{% if categories %}
-<section>
-    <div style="display:flex;flex-wrap:nowrap;gap:8px;overflow-x:auto;padding-bottom:4px;" class="custom-scroll">
-        <a href="/" style="flex-shrink:0;padding:8px 18px;border-radius:99px;font-size:13px;font-weight:700;text-decoration:none;{% if not current_category %}background:#dc2626;color:#fff;{% else %}background:rgba(0,0,0,.06);color:inherit;{% endif %}">Tout</a>
-        {% for cat in categories %}
-        <a href="/?category={{ cat.id }}" style="flex-shrink:0;padding:8px 18px;border-radius:99px;font-size:13px;font-weight:700;text-decoration:none;display:flex;align-items:center;gap:6px;{% if current_category == cat.id %}background:#dc2626;color:#fff;{% else %}background:rgba(0,0,0,.06);color:inherit;{% endif %}">
-            {{ cat.icon }} {{ cat.name }}
-            {% if cat.count %}<span style="font-size:11px;opacity:.7;">({{ cat.count }})</span>{% endif %}
-        </a>
-        {% endfor %}
+{% elif selected_playlist %}
+    {# ═══════════ PAGE PAYS / PLAYLIST ═══════════ #}
+    <div class="mb-6">
+        <h1 class="font-display text-2xl font-semibold sm:text-3xl">{{ selected_playlist.display_name }}</h1>
+        <p class="mt-1 text-sm text-ink-muted">{{ iptv_channels|length if iptv_channels else 0 }} chaîne{{ 's' if (iptv_channels|length if iptv_channels else 0) > 1 else '' }} en direct</p>
     </div>
-</section>
-{% endif %}
-
-<!-- ── LIVES EN DIRECT ── -->
-{% if live_streams %}
-<section id="live">
-    <h2 style="font-size:1.25rem;font-weight:800;margin:0 0 16px;display:flex;align-items:center;gap:10px;">
-        <span style="width:32px;height:32px;background:#fee2e2;border-radius:8px;display:flex;align-items:center;justify-content:center;"></span>
-        Lives en direct <span style="font-size:13px;font-weight:500;color:#6b7280;">({{ live_streams|length }})</span>
-    </h2>
-    <div class="grid-lives">
-        {% for stream in live_streams %}
-        <a href="/watch/user/{{ stream.id }}" class="stream-card" style="background:#fff;border-radius:14px;overflow:hidden;border:1px solid #e5e7eb;text-decoration:none;color:inherit;display:flex;flex-direction:column;">
-            <style>html.dark .stream-card{background:#1f2937;border-color:#374151;}</style>
-            <div style="height:140px;background:linear-gradient(135deg,#1f2937,#374151);position:relative;display:flex;align-items:center;justify-content:center;">
-                {% if stream.thumbnail %}<img src="{{ stream.thumbnail }}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;">{% endif %}
-                <div style="position:absolute;top:8px;left:8px;background:#dc2626;color:#fff;font-size:10px;font-weight:800;padding:3px 8px;border-radius:99px;" class="live-badge">LIVE</div>
-                <div style="position:absolute;bottom:8px;right:8px;background:rgba(0,0,0,.6);color:#fff;font-size:11px;padding:3px 8px;border-radius:99px;">
-                    <i class="fas fa-eye"></i> {{ stream.viewer_count }}
-                </div>
-                {% if not stream.thumbnail %}<i class="fas fa-video" style="font-size:2.5rem;color:rgba(255,255,255,.3);"></i>{% endif %}
-            </div>
-            <div style="padding:12px;">
-                <div style="font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:4px;">{{ stream.title }}</div>
-                <div style="font-size:12px;color:#6b7280;">{{ stream.category }} · {{ stream.like_count }}</div>
-            </div>
-        </a>
-        {% endfor %}
+    <div class="mb-7">{{ country_rail() }}</div>
+    {%- set _pn = selected_playlist.display_name|string -%}
+    <div class="mb-4 flex items-center justify-between">
+        <h2 class="font-display text-lg font-semibold">Chaînes — {{ (_pn.split(' ', 1)|last) if ' ' in _pn else _pn }}</h2>
+        <a href="/" class="text-xs font-medium text-accent-2 hover:underline">← Accueil</a>
     </div>
-</section>
-{% endif %}
-
-<!-- ── CHAÎNES TV MONDIALES PAR PAYS ── -->
-{% if pl_countries and not selected_playlist %}
-<section id="tv">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px;">
-        <h2 style="font-size:1.25rem;font-weight:800;margin:0;display:flex;align-items:center;gap:10px;">
-            <span style="width:32px;height:32px;background:#dbeafe;border-radius:8px;display:flex;align-items:center;justify-content:center;"></span>
-            Chaînes Télévisions par pays <span style="font-size:13px;font-weight:500;color:#6b7280;">({{ pl_countries|length }} pays)</span>
-        </h2>
-    </div>
-
-    <!-- Filtre continents -->
-    <div class="filters-scroll" style="margin-bottom:16px;" id="cont-filters">
-        <button onclick="filterCont('all',this)" class="cont-btn" style="padding:6px 16px;border-radius:99px;border:none;cursor:pointer;font-size:12px;font-weight:700;background:#dc2626;color:#fff;">Tous</button>
-        <button onclick="filterCont('AF',this)" class="cont-btn" style="padding:6px 16px;border-radius:99px;border:1px solid #d1d5db;cursor:pointer;font-size:12px;font-weight:600;background:transparent;color:inherit;">Afrique</button>
-        <button onclick="filterCont('EU',this)" class="cont-btn" style="padding:6px 16px;border-radius:99px;border:1px solid #d1d5db;cursor:pointer;font-size:12px;font-weight:600;background:transparent;color:inherit;">Europe</button>
-        <button onclick="filterCont('AS',this)" class="cont-btn" style="padding:6px 16px;border-radius:99px;border:1px solid #d1d5db;cursor:pointer;font-size:12px;font-weight:600;background:transparent;color:inherit;">Asie</button>
-        <button onclick="filterCont('NA',this)" class="cont-btn" style="padding:6px 16px;border-radius:99px;border:1px solid #d1d5db;cursor:pointer;font-size:12px;font-weight:600;background:transparent;color:inherit;">Am. Nord</button>
-        <button onclick="filterCont('SA',this)" class="cont-btn" style="padding:6px 16px;border-radius:99px;border:1px solid #d1d5db;cursor:pointer;font-size:12px;font-weight:600;background:transparent;color:inherit;">Am. Sud</button>
-        <button onclick="filterCont('OC',this)" class="cont-btn" style="padding:6px 16px;border-radius:99px;border:1px solid #d1d5db;cursor:pointer;font-size:12px;font-weight:600;background:transparent;color:inherit;">Océanie</button>
-        <button onclick="filterCont('ME',this)" class="cont-btn" style="padding:6px 16px;border-radius:99px;border:1px solid #d1d5db;cursor:pointer;font-size:12px;font-weight:600;background:transparent;color:inherit;">Moyen-Orient</button>
-    </div>
-
-    <div class="grid-countries" id="countries-grid">
-        {% set cont_map = {
-            'FR':'EU','BE':'EU','CH':'EU','LU':'EU','DE':'EU','ES':'EU','IT':'EU','PT':'EU',
-            'NL':'EU','RU':'EU','PL':'EU','UA':'EU','RO':'EU','BG':'EU','RS':'EU','HR':'EU',
-            'SI':'EU','SK':'EU','CZ':'EU','HU':'EU','AT':'EU','GR':'EU','CY':'EU','MT':'EU',
-            'IS':'EU','NO':'EU','SE':'EU','FI':'EU','DK':'EU','IE':'EU','LT':'EU','LV':'EU',
-            'EE':'EU','MD':'EU','BY':'EU','GB':'EU','AL':'EU','AD':'EU','MC':'EU','LU':'EU',
-            'MA':'AF','DZ':'AF','TN':'AF','SN':'AF','CI':'AF','CM':'AF','ML':'AF','CD':'AF',
-            'CG':'AF','BF':'AF','NE':'AF','TD':'AF','GA':'AF','GN':'AF','BJ':'AF','TG':'AF',
-            'MR':'AF','LY':'AF','EG':'AF','ZA':'AF','NG':'AF','KE':'AF','TZ':'AF','UG':'AF',
-            'RW':'AF','MZ':'AF','GH':'AF','ET':'AF','AO':'AF','ZM':'AF','ZW':'AF','SD':'AF',
-            'CN':'AS','JP':'AS','KR':'AS','IN':'AS','PK':'AS','BD':'AS','ID':'AS','MY':'AS',
-            'SG':'AS','PH':'AS','VN':'AS','TH':'AS','MM':'AS','KH':'AS','LA':'AS','NP':'AS',
-            'LK':'AS','AF':'AS','KZ':'AS','UZ':'AS','TJ':'AS','KG':'AS','TM':'AS','GE':'AS',
-            'AM':'AS','AZ':'AS','BN':'AS','MN':'AS','TW':'AS','HK':'AS',
-            'SA':'ME','AE':'ME','QA':'ME','KW':'ME','BH':'ME','OM':'ME','JO':'ME','IQ':'ME',
-            'IR':'ME','SY':'ME','LB':'ME','IL':'ME','TR':'ME','YE':'ME','PS':'ME',
-            'US':'NA','CA':'NA','MX':'NA','GT':'NA','HN':'NA','SV':'NA','NI':'NA',
-            'CR':'NA','PA':'NA','CU':'NA','DO':'NA','HT':'NA','JM':'NA','PR':'NA',
-            'BR':'SA','AR':'SA','CO':'SA','CL':'SA','PE':'SA','VE':'SA','EC':'SA',
-            'BO':'SA','PY':'SA','UY':'SA',
-            'AU':'OC','NZ':'OC','FJ':'OC','PG':'OC'
-        } %}
-        {% for playlist in pl_countries %}
-        {%- set cc = playlist.country | default('') | string -%}
-        {%- set cont = 'EU' if cc in ['FR','BE','CH','LU','DE','ES','IT','PT','NL','RU','PL','UA','RO','BG','RS','HR','SI','SK','CZ','HU','AT','GR','CY','MT','IS','NO','SE','FI','DK','IE','LT','LV','EE','MD','BY','GB','AL','AD','MC'] else ('AF' if cc in ['MA','DZ','TN','SN','CI','CM','ML','CD','CG','BF','NE','TD','GA','GN','BJ','TG','MR','LY','EG','ZA','NG','KE','TZ','UG','RW','MZ','GH','ET','AO','ZM','ZW','SD'] else ('AS' if cc in ['CN','JP','KR','IN','PK','BD','ID','MY','SG','PH','VN','TH','MM','KH','LA','NP','LK','AF','KZ','UZ','TJ','KG','TM','GE','AM','AZ','BN','MN','TW','HK'] else ('ME' if cc in ['SA','AE','QA','KW','BH','OM','JO','IQ','IR','SY','LB','IL','TR','YE','PS'] else ('NA' if cc in ['US','CA','MX','GT','HN','SV','NI','CR','PA','CU','DO','HT','JM','PR'] else ('SA' if cc in ['BR','AR','CO','CL','PE','VE','EC','BO','PY','UY'] else ('OC' if cc in ['AU','NZ','FJ','PG'] else 'OTHER')))))) -%}
-        <a href="/?playlist={{ playlist.name }}" class="stream-card country-card"
-           data-cont="{{ cont }}" data-cc="{{ cc }}"
-           style="border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;text-decoration:none;color:inherit;display:flex;flex-direction:column;position:relative;min-height:90px;background:#1e293b;">
-            <!-- Drapeau via <img> pour bénéficier du onerror -->
-            <img src="https://flagcdn.com/w320/{{ cc|lower }}.png"
-                 alt="{{ cc }}"
-                 style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;display:block;"
-                 onerror="this.style.display='none'">
-            <div style="position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,.85) 0%,rgba(0,0,0,.25) 60%,transparent 100%);"></div>
-            <div style="position:relative;margin-top:auto;padding:8px;">
-                <div style="font-size:12px;font-weight:700;color:#fff;line-height:1.2;text-shadow:0 1px 4px rgba(0,0,0,.8);">
-                    {%- set dn = playlist.display_name | default('') | string -%}
-                    {%- if ' ' in dn -%}{{ dn.split(' ', 1) | last }}{%- else -%}{{ dn }}{%- endif -%}
-                </div>
-                <div style="font-size:10px;color:rgba(255,255,255,.8);text-shadow:0 1px 3px rgba(0,0,0,.8);">{{ playlist.channel_count or 0 }} chaînes</div>
-            </div>
-        </a>
-        {% else %}
-        <div style="grid-column:1/-1;text-align:center;padding:32px;color:#9ca3af;font-size:14px;">
-            Aucune chaîne disponible. <a href="/admin/dashboard" style="color:#dc2626;">Lancer une synchronisation</a>
-        </div>
-        {% endfor %}
-    </div>
-</section>
-{% endif %}
-
-<!-- ── CATÉGORIES THÉMATIQUES ── -->
-{% if pl_categories and not selected_playlist %}
-<section id="thematic-categories">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px;">
-        <h2 style="font-size:1.25rem;font-weight:800;margin:0;display:flex;align-items:center;gap:10px;">
-            <span style="width:32px;height:32px;background:#fef3c7;border-radius:8px;display:flex;align-items:center;justify-content:center;"></span>
-            Catégories thématiques
-        </h2>
-    </div>
-    <div class="grid-categories">
-        {% for pl in pl_categories %}
-        <a href="/?playlist={{ pl.name }}" class="stream-card"
-           style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;text-decoration:none;color:inherit;display:flex;flex-direction:column;padding:14px 12px;align-items:center;gap:8px;">
-            <style>html.dark a.stream-card{background:#1f2937;border-color:#374151;}</style>
-            <div style="font-size:1.8rem;">
-                {%- set dn = pl.display_name | default('') | string -%}
-                {%- if dn -%}{{ dn.split(' ', 1) | first }}{%- else -%}{%- endif -%}
-            </div>
-            <div style="font-size:12px;font-weight:700;text-align:center;">
-                {%- set dn = pl.display_name | default('') | string -%}
-                {%- if ' ' in dn -%}{{ dn.split(' ', 1) | last }}{%- else -%}{{ dn }}{%- endif -%}
-            </div>
-            <div style="font-size:11px;color:#9ca3af;">{{ pl.channel_count or 0 }} chaînes</div>
-        </a>
-        {% endfor %}
-    </div>
-</section>
-{% endif %}
-
-<!-- ── FLUX EXTERNES (TV, YouTube, Radio) — Uniquement sur le dashboard principal ── -->
-{% if external_streams and not selected_playlist and not current_category %}
-<section id="external-streams">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px;">
-        <h2 style="font-size:1.25rem;font-weight:800;margin:0;display:flex;align-items:center;gap:10px;">
-            <span style="width:32px;height:32px;background:#e0e7ff;border-radius:8px;display:flex;align-items:center;justify-content:center;"></span>
-            Chaînes & Médias
-        </h2>
-        <!-- Filtres rapides -->
-        <div style="display:flex;gap:6px;flex-wrap:wrap;">
-            <button onclick="filterExt('all',this)" class="flt-btn active" style="padding:5px 14px;border-radius:99px;border:none;cursor:pointer;font-size:12px;font-weight:700;background:#dc2626;color:#fff;">Tout</button>
-            <button onclick="filterExt('hls',this)" class="flt-btn" style="padding:5px 14px;border-radius:99px;border:1px solid #d1d5db;cursor:pointer;font-size:12px;font-weight:600;background:transparent;color:inherit;">TV</button>
-            <button onclick="filterExt('youtube',this)" class="flt-btn" style="padding:5px 14px;border-radius:99px;border:1px solid #d1d5db;cursor:pointer;font-size:12px;font-weight:600;background:transparent;color:inherit;">YouTube</button>
-            <button onclick="filterExt('audio',this)" class="flt-btn" style="padding:5px 14px;border-radius:99px;border:1px solid #d1d5db;cursor:pointer;font-size:12px;font-weight:600;background:transparent;color:inherit;">Radio</button>
-        </div>
-    </div>
-    <div class="grid-streams" id="ext-grid">
-        {% for stream in external_streams %}
-        <a href="/watch/external/{{ stream.id }}" class="stream-card ext-card" data-stype="{{ stream.stream_type }}"
-           style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;text-decoration:none;color:inherit;display:flex;flex-direction:column;">
-            <div class="ext-card-img" style="height:100px;background:#f3f4f6;position:relative;display:flex;align-items:center;justify-content:center;">
-                <style>
-                html.dark .ext-card-img { background:#2d3748 !important; }
-                </style>
-                {% if stream.logo %}<img src="{{ stream.logo }}" style="max-width:100%;max-height:80px;object-fit:contain;padding:10px;" loading="lazy" onerror="this.style.display='none'">
-                {% else %}<i class="fas {% if stream.stream_type=='audio' %}fa-radio{% elif stream.stream_type=='youtube' %}fa-play-circle{% else %}fa-tv{% endif %}" style="font-size:2rem;color:#d1d5db;"></i>{% endif %}
-                <div style="position:absolute;top:6px;right:6px;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:700;
-                    {% if stream.stream_type=='youtube' %}background:#fee2e2;color:#dc2626;
-                    {% elif stream.stream_type=='audio' %}background:#e0e7ff;color:#4338ca;
-                    {% else %}background:#dcfce7;color:#15803d;{% endif %}">
-                    {% if stream.stream_type=='youtube' %}YT{% elif stream.stream_type=='audio' %}{% else %}{% endif %}
-                </div>
-            </div>
-            <div style="padding:10px;">
-                <div style="font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:3px;">{{ stream.title }}</div>
-                <div style="display:flex;align-items:center;justify-content:space-between;">
-                    <span style="font-size:11px;color:#9ca3af;">{{ stream.country }}{% if stream.quality %} · {{ stream.quality }}{% endif %}</span>
-                    <button onclick="addToFavorites('{{ stream.id }}','external',event)" style="background:none;border:none;cursor:pointer;font-size:14px;padding:2px;"></button>
-                </div>
-            </div>
-        </a>
-        {% endfor %}
-    </div>
-</section>
-{% endif %}
-
-<!-- ── CHAÎNES D'UNE PLAYLIST ── -->
-{% if selected_playlist and iptv_channels %}
-<section>
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
-        <a href="/" style="color:#dc2626;text-decoration:none;font-size:20px;">←</a>
-        <h2 style="font-size:1.25rem;font-weight:800;margin:0;">{{ selected_playlist.display_name }}</h2>
-        <span style="font-size:13px;color:#9ca3af;">{{ iptv_channels|length }} chaînes</span>
-    </div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;">
+    {% if iptv_channels %}
+    <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
         {% for ch in iptv_channels %}
-        <a href="/watch/iptv/{{ ch.id }}" class="stream-card" style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;text-decoration:none;color:inherit;display:flex;flex-direction:column;">
-            <style>html.dark a.stream-card{background:#1f2937;border-color:#374151;}</style>
-            <div class="ext-card-img" style="height:90px;background:#f3f4f6;display:flex;align-items:center;justify-content:center;position:relative;">
-                {% if ch.logo %}<img src="{{ ch.logo }}" style="max-width:100%;max-height:75px;object-fit:contain;padding:8px;" loading="lazy" onerror="this.style.display='none'">
-                {% else %}<i class="fas fa-tv" style="font-size:2rem;color:#d1d5db;"></i>{% endif %}
-                <div style="position:absolute;top:4px;left:4px;background:#dc2626;color:#fff;font-size:9px;font-weight:800;padding:2px 6px;border-radius:99px;" class="live-badge">LIVE</div>
-            </div>
-            <div style="padding:8px 10px;">
-                <div style="font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ ch.name }}</div>
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-top:3px;">
-                    <span style="font-size:11px;color:#9ca3af;">{{ ch.country }}</span>
-                    <button onclick="addToFavorites('{{ ch.id }}','iptv',event)" style="background:none;border:none;cursor:pointer;font-size:12px;padding:2px;"></button>
-                </div>
-            </div>
-        </a>
+        {{ stream_card('/watch/iptv/' ~ ch.id, ch.name, ch.logo, (ch.category if ch.category in cat_meta else 'iptv'), (cat_meta.get(ch.category, cat_meta['iptv'])[3] ~ ((' · ' ~ ch.country) if ch.country else '')), none, none, (ch.id, 'iptv')) }}
         {% endfor %}
     </div>
-</section>
+    {% else %}
+    <div class="card mt-4 flex flex-col items-center gap-2 p-10 text-center text-ink-muted">
+        <p class="font-medium text-ink">Aucune chaîne trouvée pour ce pays</p>
+        <p class="text-sm">Le catalogue est peut-être encore en cours de synchronisation.</p>
+    </div>
+    {% endif %}
+
+{% else %}
+    {# ═══════════ ACCUEIL / CATÉGORIE ═══════════ #}
+    <div class="mb-6">
+        <h1 class="font-display text-2xl font-semibold sm:text-3xl" id="home-title">{{ cur_meta[3] if cur_meta else 'Bonjour 👋' }}</h1>
+        <p class="mt-1 text-sm text-ink-muted">{{ ('Toutes les chaînes ' ~ cur_meta[3]|lower ~ ' en direct') if cur_meta else 'Voici ce qui se passe en direct maintenant.' }}</p>
+    </div>
+
+    {% if not current_category %}
+    <div class="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {% for sid, lbl, ic, init in [('st-live','En direct','radio', (live_streams|length if live_streams else 0)), ('st-viewers','Spectateurs','users', (live_streams|sum(attribute='viewer_count') if live_streams else 0)), ('st-channels','Chaînes','tv-2','—'), ('st-lives','Lives au total','flame','—')] %}
+        <div class="card flex items-center gap-4 p-5">
+            <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-accent-2-soft text-accent-2">{{ icon(ic, 20) }}</div>
+            <div class="min-w-0">
+                <p class="truncate text-sm text-ink-muted">{{ lbl }}</p>
+                <p id="{{ sid }}" class="font-display tabular-nums text-2xl font-semibold leading-tight">{{ init }}</p>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {# Rail de catégories #}
+    <div class="mb-7">
+        <div class="-mx-1 flex gap-2.5 overflow-x-auto px-1 pb-1" style="scrollbar-width:none">
+            <a href="/" class="flex shrink-0 items-center rounded-full border px-4 py-2 text-sm font-medium transition-colors {{ 'border-accent-2 bg-accent-2-soft text-accent-2' if not current_category else 'border-border text-ink-muted hover:text-ink' }}">Tout</a>
+            {% for cat in (categories or []) %}
+            {%- set m = cat_meta.get(cat.id, cat_meta['iptv']) -%}
+            {%- set active = (current_category == cat.id) -%}
+            <a href="/?category={{ cat.id }}" class="flex shrink-0 items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition-colors {{ 'border-accent-2 bg-accent-2-soft text-accent-2' if active else 'border-border text-ink-muted hover:text-ink' }}">
+                <span class="{{ 'text-accent-2' if active else m[2] }}">{{ icon(m[0], 15) }}</span>
+                {{ m[3] if cat.id in cat_meta else cat.name }}
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+
+    {% if not current_category and pl_countries %}
+    <div class="mb-7">
+        <div class="mb-2.5 flex items-center justify-between">
+            <p class="text-sm font-medium text-ink-muted">Parcourir par pays</p>
+            <a href="/?view=countries" class="text-xs font-medium text-accent-2 hover:underline">Voir tout →</a>
+        </div>
+        {{ country_rail() }}
+    </div>
+    {% endif %}
+
+    {# Lives communautaires #}
+    {% if live_streams %}
+    <section id="live" class="mb-8">
+        <div class="mb-4 flex items-center justify-between">
+            <h2 class="font-display text-lg font-semibold">Lives en direct <span class="text-sm font-normal text-ink-muted">({{ live_streams|length }})</span></h2>
+        </div>
+        <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
+            {% for stream in live_streams %}
+            {%- set sm = cat_meta.get(stream.category, cat_meta['entertainment']) -%}
+            <a href="/watch/user/{{ stream.id }}" class="card group flex flex-col overflow-hidden transition-transform hover:-translate-y-0.5 stream-card">
+                <div class="relative flex aspect-video w-full items-center justify-center overflow-hidden {{ sm[1] }}">
+                    <span class="{{ sm[2] }}">{{ icon('video', 30, '', 1.75) }}</span>
+                    {% if stream.thumbnail %}<img src="{{ stream.thumbnail }}" alt="" loading="lazy" onerror="this.style.display='none'" class="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-105">{% endif %}
+                    <div class="absolute left-2.5 top-2.5"><span class="inline-flex items-center gap-1.5 rounded-full bg-accent px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white"><span class="live-dot bg-white"></span>DIRECT</span></div>
+                    <div class="absolute bottom-2.5 left-2.5 flex items-center gap-1 rounded-md bg-black/55 px-1.5 py-0.5 text-[11px] font-medium text-white backdrop-blur-sm">{{ icon('eye', 12) }} {{ stream.viewer_count }}</div>
+                </div>
+                <div class="flex items-start gap-2.5 p-3.5">
+                    <div class="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg {{ sm[1] }}"><span class="{{ sm[2] }}">{{ icon(sm[0], 14) }}</span></div>
+                    <div class="min-w-0">
+                        <p class="truncate text-sm font-semibold leading-snug">{{ stream.title }}</p>
+                        <p class="truncate text-xs text-ink-muted">{{ sm[3] if stream.category in cat_meta else stream.category }} · {{ stream.like_count }} j'aime</p>
+                    </div>
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+    </section>
+    {% endif %}
+
+    {# Flux externes (TV, YouTube, Radio) #}
+    {% if external_streams and not current_category %}
+    <section id="external-streams" class="mb-8">
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <h2 class="font-display text-lg font-semibold">En direct maintenant</h2>
+            <div class="flex gap-2">
+                {% for tid, lbl in [('all','Tout'),('hls','TV'),('youtube','YouTube'),('audio','Radio')] %}
+                <button type="button" onclick="filterExt('{{ tid }}',this)" data-stype="{{ tid }}"
+                        class="flt-btn rounded-full border px-3.5 py-1.5 text-xs font-semibold transition-colors {{ 'border-accent bg-accent text-white' if tid == 'all' else 'border-border text-ink-muted hover:text-ink' }}">{{ lbl }}</button>
+                {% endfor %}
+            </div>
+        </div>
+        <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4" id="ext-grid">
+            {% for stream in external_streams %}
+            {{ stream_card('/watch/external/' ~ stream.id, stream.title, stream.logo, (stream.category if stream.category in cat_meta else 'iptv'), ((cat_meta.get(stream.category, cat_meta['iptv'])[3]) ~ ((' · ' ~ stream.country) if stream.country else '')), stream.quality, none, (stream.id, 'external'), stream.stream_type) }}
+            {% endfor %}
+        </div>
+    </section>
+    {% endif %}
+
+    {# Vue catégorie : flux externes + chaînes IPTV correspondantes #}
+    {% if current_category %}
+    {% set _items = [] %}
+    <div class="mb-4 flex items-center justify-between">
+        <h2 class="font-display text-lg font-semibold">{{ cur_meta[3] if cur_meta else 'Chaînes' }} en direct</h2>
+    </div>
+    {% if external_streams or iptv_channels or live_streams %}
+    <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
+        {% for stream in (external_streams or []) %}
+        {{ stream_card('/watch/external/' ~ stream.id, stream.title, stream.logo, (stream.category if stream.category in cat_meta else 'iptv'), ((cat_meta.get(stream.category, cat_meta['iptv'])[3]) ~ ((' · ' ~ stream.country) if stream.country else '')), stream.quality, none, (stream.id, 'external'), stream.stream_type) }}
+        {% endfor %}
+        {% for ch in (iptv_channels or []) %}
+        {{ stream_card('/watch/iptv/' ~ ch.id, ch.name, ch.logo, (ch.category if ch.category in cat_meta else 'iptv'), (cat_meta.get(ch.category, cat_meta['iptv'])[3] ~ ((' · ' ~ ch.country) if ch.country else '')), none, none, (ch.id, 'iptv')) }}
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% if not external_streams and not iptv_channels and not live_streams %}
+    <div class="card mt-4 flex flex-col items-center gap-2 p-10 text-center text-ink-muted">
+        <p class="font-medium text-ink">Aucune chaîne dans cette catégorie pour l'instant</p>
+        <p class="text-sm">Revenez plus tard ou explorez une autre catégorie.</p>
+    </div>
+    {% endif %}
+    {% endif %}
+
+    {# Catégories thématiques #}
+    {% if pl_categories and not current_category %}
+    <section id="thematic-categories" class="mb-8">
+        <div class="mb-4 flex items-center justify-between">
+            <h2 class="font-display text-lg font-semibold">Catégories thématiques</h2>
+        </div>
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6">
+            {% for pl in pl_categories %}
+            {%- set dn = (pl.display_name or '')|string -%}
+            <a href="/?playlist={{ pl.name }}" class="card flex flex-col items-center gap-1.5 p-4 text-center transition-transform hover:-translate-y-0.5">
+                <span class="text-2xl leading-none">{{ dn.split(' ', 1)|first if dn else '' }}</span>
+                <span class="text-sm font-semibold leading-snug">{{ (dn.split(' ', 1)|last) if ' ' in dn else dn }}</span>
+                <span class="text-xs text-ink-muted">{{ pl.channel_count or 0 }} chaînes</span>
+            </a>
+            {% endfor %}
+        </div>
+    </section>
+    {% endif %}
 {% endif %}
 
-<!-- ── AVIS UTILISATEURS ── -->
-<section style="margin-top:16px;padding-top:32px;border-top:1px solid #e5e7eb;">
-    <div style="max-width:640px;margin:0 auto;">
-        <div style="text-align:center;margin-bottom:24px;">
-            <h2 style="font-size:1.25rem;font-weight:800;margin:0 0 8px;">Votre avis nous intéresse</h2>
-            <p style="font-size:14px;color:#6b7280;margin:0;">Partagez vos suggestions ou signalez un problème</p>
+{# ═══════════ AVIS UTILISATEURS ═══════════ #}
+<section class="mt-10">
+    <div class="mb-4">
+        <h2 class="font-display text-lg font-semibold">Votre avis nous intéresse</h2>
+        <p class="mt-1 text-sm text-ink-muted">Partagez vos suggestions ou signalez un problème</p>
+    </div>
+    <div id="feedback-wrap" class="card max-w-xl p-5">
+        <div id="feedback-ok" class="hidden py-6 text-center">
+            <div class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-accent-2-soft text-accent-2">{{ icon('check', 22) }}</div>
+            <h3 class="font-display text-base font-semibold">Merci pour votre avis !</h3>
+            <p class="mt-1 text-sm text-ink-muted">Nous avons bien reçu votre message.</p>
+            <button type="button" onclick="document.getElementById('feedback-ok').classList.add('hidden');document.getElementById('feedback-form').classList.remove('hidden');"
+                    class="mt-4 rounded-full border border-border px-4 py-2 text-sm font-medium text-ink-muted hover:text-ink">Envoyer un autre avis</button>
         </div>
-        <div style="background:#fff;border-radius:16px;padding:24px;border:1px solid #e5e7eb;box-shadow:0 2px 12px rgba(0,0,0,.06);">
-            <style>html.dark #feedback-wrap{background:#1f2937;border-color:#374151;}</style>
-            <div id="feedback-wrap" style="background:#fff;border-radius:16px;">
-                <div id="feedback-ok" style="display:none;text-align:center;padding:32px 0;">
-                    <div style="font-size:3rem;margin-bottom:12px;"></div>
-                    <h3 style="font-size:1.1rem;font-weight:700;color:#16a34a;margin:0 0 8px;">Merci pour votre avis !</h3>
-                    <p style="font-size:13px;color:#6b7280;margin:0 0 16px;">Nous avons bien reçu votre message.</p>
-                    <button onclick="document.getElementById('feedback-ok').style.display='none';document.getElementById('feedback-form').style.display='block';" style="background:none;border:none;cursor:pointer;color:#dc2626;font-size:13px;font-weight:600;">Envoyer un autre avis</button>
+        <div id="feedback-form">
+            <div class="mb-4">
+                <p class="mb-2 text-sm font-medium">Note globale</p>
+                <div class="flex gap-1">
+                    {% for i in range(1,6) %}
+                    <button type="button" onclick="setRating({{ i }})" class="star-btn text-2xl leading-none transition-colors" data-star="{{ i }}">★</button>
+                    {% endfor %}
                 </div>
-                <div id="feedback-form">
-                    <!-- Étoiles -->
-                    <div style="margin-bottom:16px;">
-                        <div style="font-size:13px;font-weight:600;margin-bottom:8px;">Note globale</div>
-                        <div style="display:flex;gap:6px;">
-                            {% for i in range(1,6) %}
-                            <button type="button" onclick="setRating({{ i }})" class="star-btn" data-star="{{ i }}"
-                                style="background:none;border:none;cursor:pointer;font-size:1.8rem;color:#d1d5db;padding:2px;transition:color .1s;">★</button>
-                            {% endfor %}
-                        </div>
-                        <input type="hidden" id="fb-rating" value="5">
-                    </div>
-                    <!-- Message -->
-                    <div style="margin-bottom:14px;">
-                        <label style="font-size:13px;font-weight:600;display:block;margin-bottom:6px;">Message <span style="color:#dc2626;">*</span></label>
-                        <textarea id="fb-message" rows="4" maxlength="2000" placeholder="Décrivez votre expérience, proposez une amélioration..."
-                            style="width:100%;border:1px solid #d1d5db;border-radius:10px;padding:10px 14px;font-size:13px;resize:vertical;outline:none;transition:border-color .15s;background:inherit;color:inherit;"
-                            onfocus="this.style.borderColor='#dc2626'" onblur="this.style.borderColor='#d1d5db'"></textarea>
-                    </div>
-                    <!-- Email -->
-                    <div style="margin-bottom:16px;">
-                        <label style="font-size:13px;font-weight:600;display:block;margin-bottom:6px;">Email <span style="font-size:12px;color:#9ca3af;font-weight:400;">(optionnel — pour vous répondre)</span></label>
-                        <input type="email" id="fb-email" placeholder="votre@email.com" maxlength="200"
-                            style="width:100%;border:1px solid #d1d5db;border-radius:10px;padding:10px 14px;font-size:13px;outline:none;transition:border-color .15s;background:inherit;color:inherit;"
-                            onfocus="this.style.borderColor='#dc2626'" onblur="this.style.borderColor='#d1d5db'">
-                    </div>
-                    <div id="fb-error" style="display:none;background:#fee2e2;color:#dc2626;padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:12px;"></div>
-                    <button onclick="submitFeedback()" id="fb-btn"
-                        style="width:100%;background:linear-gradient(135deg,#dc2626,#b91c1c);color:#fff;border:none;padding:12px 20px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:opacity .2s;">
-                        <i class="fas fa-paper-plane"></i> Envoyer mon avis
-                    </button>
-                </div>
+                <input type="hidden" id="fb-rating" value="5">
             </div>
+            <div class="mb-4">
+                <label for="fb-message" class="mb-1.5 block text-sm font-medium">Message <span class="text-accent">*</span></label>
+                <textarea id="fb-message" rows="4" maxlength="2000" placeholder="Décrivez votre expérience, proposez une amélioration..."
+                          class="w-full resize-y rounded-xl border border-border bg-surface-2 px-3.5 py-2.5 text-sm outline-none placeholder:text-ink-muted focus-visible:border-accent-2"></textarea>
+            </div>
+            <div class="mb-4">
+                <label for="fb-email" class="mb-1.5 block text-sm font-medium">Email <span class="font-normal text-ink-muted">(optionnel — pour vous répondre)</span></label>
+                <input type="email" id="fb-email" placeholder="votre@email.com" maxlength="200"
+                       class="w-full rounded-xl border border-border bg-surface-2 px-3.5 py-2.5 text-sm outline-none placeholder:text-ink-muted focus-visible:border-accent-2">
+            </div>
+            <div id="fb-error" class="mb-3 hidden rounded-xl border border-accent/30 bg-accent/10 px-3.5 py-2.5 text-sm text-accent"></div>
+            <button type="button" onclick="submitFeedback()" id="fb-btn"
+                    class="inline-flex items-center gap-2 rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60">
+                <i class="fas fa-paper-plane"></i> Envoyer mon avis
+            </button>
         </div>
     </div>
 </section>
 
-</div><!-- end main flex -->
+</div>
+{% endblock %}
 
+{% block scripts %}
 <script>
+// ── Salutation selon l'heure locale ──
+(function(){
+    var el = document.getElementById('home-title');
+    if (!el || el.textContent.indexOf('Bonjour') !== 0) return;
+    var h = new Date().getHours();
+    var g = h < 5 ? 'Bonne nuit' : h < 12 ? 'Bonjour' : h < 18 ? 'Bon après-midi' : 'Bonsoir';
+    el.textContent = g + ' 👋';
+})();
+
+// ── Cartes de statistiques ──
+(function(){
+    if (!document.getElementById('st-live')) return;
+    var fmt = new Intl.NumberFormat('fr-FR', { notation: 'compact' });
+    var v = document.getElementById('st-viewers');
+    if (v) v.textContent = fmt.format(parseInt(v.textContent, 10) || 0);
+    fetch('/api/stats/public', { credentials: 'include' })
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+            var set = function(id, val){ var e = document.getElementById(id); if (e) e.textContent = val; };
+            set('st-live', String(d.live_streams || 0));
+            set('st-channels', fmt.format((d.iptv_channels || 0) + (d.external_streams || 0)));
+            set('st-lives', String(d.total_streams || 0));
+        }).catch(function(){});
+})();
+
 // ── Filtre types de flux ──
 function filterExt(type, btn) {
     document.querySelectorAll('.flt-btn').forEach(function(b){
-        b.style.background='transparent'; b.style.color='inherit'; b.style.borderColor='#d1d5db';
+        b.classList.remove('border-accent','bg-accent','text-white');
+        b.classList.add('border-border','text-ink-muted');
     });
-    btn.style.background='#dc2626'; btn.style.color='#fff'; btn.style.borderColor='#dc2626';
-    document.querySelectorAll('.ext-card').forEach(function(c){
+    btn.classList.remove('border-border','text-ink-muted');
+    btn.classList.add('border-accent','bg-accent','text-white');
+    document.querySelectorAll('#ext-grid .stream-card').forEach(function(c){
         c.style.display=(type==='all'||c.dataset.stype===type)?'':'none';
     });
 }
@@ -8993,32 +9806,42 @@ function filterExt(type, btn) {
 // ── Filtre continents ──
 function filterCont(cont, btn) {
     document.querySelectorAll('.cont-btn').forEach(function(b){
-        b.style.background='transparent'; b.style.color='inherit'; b.style.borderColor='#d1d5db';
+        b.classList.remove('border-accent','bg-accent','text-white');
+        b.classList.add('border-border','text-ink-muted');
     });
-    btn.style.background='#dc2626'; btn.style.color='#fff'; btn.style.borderColor='#dc2626';
-    document.querySelectorAll('.country-card').forEach(function(c){
-        c.style.display=(cont==='all'||c.dataset.cont===cont)?'':'none';
+    btn.classList.remove('border-border','text-ink-muted');
+    btn.classList.add('border-accent','bg-accent','text-white');
+    var shown = 0;
+    document.querySelectorAll('#countries-grid .country-card').forEach(function(c){
+        var ok = (cont==='all'||c.dataset.cont===cont);
+        c.style.display = ok ? '' : 'none';
+        if (ok) shown++;
     });
+    var empty = document.getElementById('countries-empty');
+    if (empty) empty.classList.toggle('hidden', shown > 0);
 }
 
-// ── Fix drapeaux pays : précharge les images pour détecter les erreurs ──
-(function fixCountryFlags(){
-    document.querySelectorAll('.country-card img').forEach(function(img){
-        // Si déjà en erreur (chargé avant DOMContentLoaded)
-        if (img.complete && img.naturalWidth === 0) {
-            img.style.display = 'none';
-        }
-        img.addEventListener('error', function(){ img.style.display='none'; });
+// ── Tri des pays ──
+function sortCountries(mode) {
+    var grid = document.getElementById('countries-grid');
+    if (!grid) return;
+    var cards = Array.prototype.slice.call(grid.querySelectorAll('.country-card'));
+    cards.sort(function(a, b){
+        if (mode === 'count') return (parseInt(b.dataset.count,10)||0) - (parseInt(a.dataset.count,10)||0);
+        return (a.dataset.name||'').localeCompare(b.dataset.name||'', 'fr');
     });
-})();
+    cards.forEach(function(c){ grid.appendChild(c); });
+}
+document.addEventListener('DOMContentLoaded', function(){ if (document.getElementById('country-sort')) sortCountries('alpha'); });
 
 // ── Étoiles feedback ──
 var _rating = 5;
 function setRating(n) {
     _rating = n;
-    document.getElementById('fb-rating').value = n;
+    var r = document.getElementById('fb-rating'); if (r) r.value = n;
     document.querySelectorAll('.star-btn').forEach(function(b){
-        b.style.color = parseInt(b.dataset.star) <= n ? '#f59e0b' : '#d1d5db';
+        var on = parseInt(b.dataset.star) <= n;
+        b.style.color = on ? '#f59e0b' : 'var(--border)';
     });
 }
 document.addEventListener('DOMContentLoaded', function(){ setRating(5); });
@@ -9028,10 +9851,10 @@ async function submitFeedback() {
     var msg = document.getElementById('fb-message').value.trim();
     var email = document.getElementById('fb-email').value.trim();
     var errDiv = document.getElementById('fb-error');
-    errDiv.style.display='none';
+    errDiv.classList.add('hidden');
     if (msg.length < 10) {
         errDiv.textContent='Le message doit faire au moins 10 caractères.';
-        errDiv.style.display='block'; return;
+        errDiv.classList.remove('hidden'); return;
     }
     var btn = document.getElementById('fb-btn');
     btn.disabled=true; btn.innerHTML='<i class="fas fa-spinner fa-spin"></i> Envoi...';
@@ -9043,241 +9866,202 @@ async function submitFeedback() {
         var r = await fetch('/api/feedback/submit', {method:'POST',body:fd,credentials:'include'});
         var d = await r.json();
         if (d.success) {
-            document.getElementById('feedback-form').style.display='none';
-            document.getElementById('feedback-ok').style.display='block';
+            document.getElementById('feedback-form').classList.add('hidden');
+            document.getElementById('feedback-ok').classList.remove('hidden');
         } else {
             errDiv.textContent=d.error||'Une erreur est survenue.';
-            errDiv.style.display='block';
+            errDiv.classList.remove('hidden');
         }
     } catch(e) {
         errDiv.textContent='Erreur réseau. Vérifiez votre connexion.';
-        errDiv.style.display='block';
+        errDiv.classList.remove('hidden');
     }
     btn.disabled=false;
     btn.innerHTML='<i class="fas fa-paper-plane"></i> Envoyer mon avis';
 }
 </script>
-
-
-{% endblock %}'''
+{% endblock %}
+'''
     # ══════════════════════════════════════════════════════════════════
     # GO LIVE TEMPLATE — Streaming caméra WebRTC
     # ══════════════════════════════════════════════════════════════════
     GO_LIVE_TEMPLATE = r'''{% extends "base.html" %}
 {% block title %}Go Live - {{ app_name }}{% endblock %}
+{% block head %}
+<style>
+    .gl-src { transition: border-color .15s, background-color .15s; }
+    .gl-src.src-on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+    #gl-btn-go:disabled { opacity:.4; cursor:not-allowed; }
+</style>
+{% endblock %}
 {% block content %}
-<div style="max-width:860px;margin:0 auto;">
+{% from 'icons.html' import icon %}
+{% macro field_cls() -%}w-full rounded-xl border border-border bg-surface px-3.5 py-2.5 text-sm outline-none placeholder:text-ink-muted focus-visible:border-accent-2{%- endmacro %}
+{% macro ctl_cls() -%}flex items-center gap-2 rounded-full border border-border px-4 py-2 text-sm font-medium text-ink-muted transition-colors hover:text-ink{%- endmacro %}
+<div class="mx-auto max-w-2xl">
 
-    <!-- Header -->
-    <div style="text-align:center;margin-bottom:32px;">
-        <div style="width:72px;height:72px;background:linear-gradient(135deg,#dc2626,#f97316);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;">
-            <i class="fas fa-video" style="color:#fff;font-size:1.8rem;"></i>
-        </div>
-        <h1 style="font-size:1.8rem;font-weight:900;margin:0 0 8px;">Démarrer votre live</h1>
-        <p style="color:#6b7280;margin:0;font-size:14px;">Diffusez depuis votre caméra, votre écran ou un flux externe</p>
-    </div>
+    <!-- En-tête -->
+    <h1 class="mb-1 font-display text-2xl font-semibold">Démarrer un direct</h1>
+    <p class="mb-6 text-sm text-ink-muted">Diffusez depuis votre caméra, votre écran ou un flux externe</p>
 
     <!-- ÉTAPE 1 : FORMULAIRE -->
     <div id="step-form">
-        <div style="background:#fff;border-radius:20px;padding:32px;border:1px solid #e5e7eb;box-shadow:0 2px 16px rgba(0,0,0,.06);">
-            <style>html.dark #step-form > div, html.dark #step-camera > div, html.dark #step-live > div, html.dark #step-ended > div { background:#1f2937 !important; border-color:#374151 !important; }</style>
-            <h2 style="font-size:15px;font-weight:800;margin:0 0 20px;display:flex;align-items:center;gap:10px;">
-                <span style="width:28px;height:28px;background:#fee2e2;color:#dc2626;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:900;">1</span>
+        <div class="card space-y-5 p-6">
+            <h2 class="flex items-center gap-2.5 font-display text-base font-semibold">
+                <span class="flex h-6 w-6 items-center justify-center rounded-lg bg-accent-2-soft text-xs font-semibold text-accent-2">1</span>
                 Informations du live
             </h2>
-            <div style="display:flex;flex-direction:column;gap:16px;">
-                <div>
-                    <label style="font-size:13px;font-weight:700;display:block;margin-bottom:6px;">Titre <span style="color:#dc2626;">*</span></label>
-                    <input type="text" id="gl-title" maxlength="100" placeholder="Ex: Soirée gaming, Débat, Concert..."
-                        style="width:100%;border:1px solid #d1d5db;border-radius:10px;padding:11px 16px;font-size:14px;outline:none;background:inherit;color:inherit;transition:border .15s;"
-                        onfocus="this.style.borderColor='#dc2626'" onblur="this.style.borderColor='#d1d5db'">
-                </div>
-                <div>
-                    <label style="font-size:13px;font-weight:700;display:block;margin-bottom:6px;">Description</label>
-                    <textarea id="gl-desc" rows="2" maxlength="1000" placeholder="Décrivez votre live..."
-                        style="width:100%;border:1px solid #d1d5db;border-radius:10px;padding:11px 16px;font-size:14px;resize:vertical;outline:none;background:inherit;color:inherit;"
-                        onfocus="this.style.borderColor='#dc2626'" onblur="this.style.borderColor='#d1d5db'"></textarea>
-                </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
-                    <div>
-                        <label style="font-size:13px;font-weight:700;display:block;margin-bottom:6px;">Catégorie <span style="color:#dc2626;">*</span></label>
-                        <select id="gl-cat"
-                            style="width:100%;border:1px solid #d1d5db;border-radius:10px;padding:11px 16px;font-size:14px;outline:none;background:inherit;color:inherit;">
-                            <option value="">Choisissez...</option>
-                            {% for cat in categories %}
-                            <option value="{{ cat.id }}">{{ cat.icon }} {{ cat.name }}</option>
-                            {% endfor %}
-                        </select>
-                    </div>
-                    <div>
-                        <label style="font-size:13px;font-weight:700;display:block;margin-bottom:6px;">Tags <span style="font-weight:400;color:#9ca3af;">(séparés par virgule)</span></label>
-                        <input type="text" id="gl-tags" placeholder="gaming, music, fun..."
-                            style="width:100%;border:1px solid #d1d5db;border-radius:10px;padding:11px 16px;font-size:14px;outline:none;background:inherit;color:inherit;">
-                    </div>
-                </div>
-                <button onclick="glNextStep()"
-                    style="width:100%;background:linear-gradient(135deg,#dc2626,#b91c1c);color:#fff;border:none;padding:14px;border-radius:12px;font-size:15px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:opacity .2s;">
-                    <i class="fas fa-arrow-right"></i> Suivant — Configurer la caméra
-                </button>
+            <div>
+                <label for="gl-title" class="mb-1.5 block text-sm font-medium">Titre du direct <span class="text-accent">*</span></label>
+                <input type="text" id="gl-title" maxlength="100" placeholder="Ex: Soirée gaming, Débat, Concert..." class="{{ field_cls() }}">
             </div>
+            <div>
+                <label for="gl-desc" class="mb-1.5 block text-sm font-medium">Description (optionnel)</label>
+                <textarea id="gl-desc" rows="3" maxlength="1000" placeholder="Décrivez votre live..." class="{{ field_cls() }} resize-none"></textarea>
+            </div>
+            <div class="grid gap-5 sm:grid-cols-2">
+                <div>
+                    <label for="gl-cat" class="mb-1.5 block text-sm font-medium">Catégorie <span class="text-accent">*</span></label>
+                    <select id="gl-cat" class="{{ field_cls() }}">
+                        <option value="">Choisissez...</option>
+                        {% for cat in categories %}
+                        <option value="{{ cat.id }}">{{ cat.icon }} {{ cat.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label for="gl-tags" class="mb-1.5 block text-sm font-medium">Tags <span class="font-normal text-ink-muted">(séparés par virgule)</span></label>
+                    <input type="text" id="gl-tags" placeholder="gaming, music, fun..." class="{{ field_cls() }}">
+                </div>
+            </div>
+            <button type="button" onclick="glNextStep()" class="flex w-full items-center justify-center gap-2 rounded-xl bg-accent py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90">
+                <i class="fas fa-arrow-right"></i> Suivant — Configurer la caméra
+            </button>
         </div>
     </div>
 
     <!-- ÉTAPE 2 : CAMÉRA -->
-    <div id="step-camera" style="display:none;">
-        <div style="background:#fff;border-radius:20px;padding:32px;border:1px solid #e5e7eb;box-shadow:0 2px 16px rgba(0,0,0,.06);">
-            <h2 style="font-size:15px;font-weight:800;margin:0 0 20px;display:flex;align-items:center;gap:10px;">
-                <span style="width:28px;height:28px;background:#fee2e2;color:#dc2626;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:900;">2</span>
+    <div id="step-camera" class="hidden">
+        <div class="card p-6">
+            <h2 class="mb-4 flex items-center gap-2.5 font-display text-base font-semibold">
+                <span class="flex h-6 w-6 items-center justify-center rounded-lg bg-accent-2-soft text-xs font-semibold text-accent-2">2</span>
                 Source vidéo
             </h2>
 
             <!-- Boutons source -->
-            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px;">
-                <button onclick="glStartMedia('camera')" id="btn-src-camera"
-                    style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:18px 12px;border-radius:14px;border:2px solid #e5e7eb;background:transparent;cursor:pointer;color:inherit;transition:all .15s;">
-                    <i class="fas fa-camera" style="font-size:1.6rem;color:#dc2626;"></i>
-                    <span style="font-size:13px;font-weight:700;">Caméra</span>
-                    <span style="font-size:11px;color:#9ca3af;">Webcam / frontal</span>
+            <div class="mb-4 grid grid-cols-3 gap-3">
+                {% for sid, ic, lbl, sub in [('camera','camera','Caméra','Webcam / frontal'),('screen','desktop','Écran','Partage écran'),('both','layer-group','Cam + Micro','Vidéo & audio')] %}
+                <button type="button" onclick="glStartMedia('{{ sid }}')" id="btn-src-{{ sid }}" class="gl-src flex flex-col items-center gap-1 rounded-xl border border-border px-2 py-4 text-center">
+                    <i class="fas fa-{{ ic }}" style="font-size:1.4rem"></i>
+                    <span class="text-sm font-semibold">{{ lbl }}</span>
+                    <span class="text-[11px] text-ink-muted">{{ sub }}</span>
                 </button>
-                <button onclick="glStartMedia('screen')" id="btn-src-screen"
-                    style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:18px 12px;border-radius:14px;border:2px solid #e5e7eb;background:transparent;cursor:pointer;color:inherit;transition:all .15s;">
-                    <i class="fas fa-desktop" style="font-size:1.6rem;color:#2563eb;"></i>
-                    <span style="font-size:13px;font-weight:700;">Écran</span>
-                    <span style="font-size:11px;color:#9ca3af;">Partage écran</span>
-                </button>
-                <button onclick="glStartMedia('both')" id="btn-src-both"
-                    style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:18px 12px;border-radius:14px;border:2px solid #e5e7eb;background:transparent;cursor:pointer;color:inherit;transition:all .15s;">
-                    <i class="fas fa-layer-group" style="font-size:1.6rem;color:#7c3aed;"></i>
-                    <span style="font-size:13px;font-weight:700;">Cam + Micro</span>
-                    <span style="font-size:11px;color:#9ca3af;">Vidéo & audio</span>
-                </button>
+                {% endfor %}
             </div>
 
             <!-- Sélecteurs périphériques -->
-            <div id="gl-devices" style="display:none;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px;">
+            <div id="gl-devices" class="mb-4 hidden gap-3 sm:grid-cols-2">
                 <div>
-                    <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#9ca3af;display:block;margin-bottom:4px;">Caméra</label>
-                    <select id="gl-cam-sel" style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 12px;font-size:13px;background:inherit;color:inherit;outline:none;"></select>
+                    <label class="mb-1 block text-xs font-medium text-ink-muted">Caméra</label>
+                    <select id="gl-cam-sel" class="{{ field_cls() }}"></select>
                 </div>
                 <div>
-                    <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#9ca3af;display:block;margin-bottom:4px;">Microphone</label>
-                    <select id="gl-mic-sel" style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 12px;font-size:13px;background:inherit;color:inherit;outline:none;"></select>
+                    <label class="mb-1 block text-xs font-medium text-ink-muted">Microphone</label>
+                    <select id="gl-mic-sel" class="{{ field_cls() }}"></select>
                 </div>
             </div>
 
             <!-- Prévisualisation -->
-            <div style="position:relative;background:#000;border-radius:14px;overflow:hidden;aspect-ratio:16/9;margin-bottom:16px;">
-                <video id="gl-preview" autoplay muted playsinline style="width:100%;height:100%;object-fit:cover;"></video>
-                <div id="gl-placeholder" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:rgba(255,255,255,.4);">
-                    <i class="fas fa-camera" style="font-size:3rem;margin-bottom:12px;"></i>
-                    <p style="font-size:13px;margin:0;">Cliquez sur une source ci-dessus</p>
+            <div class="relative mb-4 w-full overflow-hidden rounded-2xl bg-black" style="aspect-ratio:16/9">
+                <video id="gl-preview" autoplay muted playsinline class="absolute inset-0 h-full w-full object-cover"></video>
+                <div id="gl-placeholder" class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/60">
+                    <i class="fas fa-camera" style="font-size:2rem"></i>
+                    <p class="text-sm">Cliquez sur une source ci-dessus</p>
                 </div>
                 <!-- VU-mètre audio -->
-                <div id="gl-vu-wrap" style="display:none;position:absolute;bottom:12px;left:12px;right:12px;height:4px;background:rgba(255,255,255,.2);border-radius:2px;overflow:hidden;">
-                    <div id="gl-vu-bar" style="height:100%;width:0%;background:#22c55e;border-radius:2px;transition:width .07s;"></div>
+                <div id="gl-vu-wrap" class="absolute inset-x-3 bottom-3 h-1.5 overflow-hidden rounded-full bg-white/20" style="display:none">
+                    <div id="gl-vu-bar" class="h-full rounded-full" style="width:0%"></div>
                 </div>
             </div>
 
             <!-- Contrôles -->
-            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">
-                <button onclick="glToggleMute()" id="gl-btn-mute" style="display:flex;align-items:center;gap:6px;padding:8px 16px;border-radius:8px;border:1px solid #d1d5db;background:transparent;cursor:pointer;font-size:13px;font-weight:600;color:inherit;">
-                    <i class="fas fa-microphone" id="gl-mic-icon"></i> <span id="gl-mic-label">Micro actif</span>
-                </button>
-                <button onclick="glToggleVideo()" id="gl-btn-vid" style="display:flex;align-items:center;gap:6px;padding:8px 16px;border-radius:8px;border:1px solid #d1d5db;background:transparent;cursor:pointer;font-size:13px;font-weight:600;color:inherit;">
-                    <i class="fas fa-video" id="gl-vid-icon"></i> <span id="gl-vid-label">Vidéo active</span>
-                </button>
-                <button onclick="glStopPreview()" style="display:flex;align-items:center;gap:6px;padding:8px 16px;border-radius:8px;border:1px solid #d1d5db;background:transparent;cursor:pointer;font-size:13px;font-weight:600;color:inherit;">
-                    <i class="fas fa-stop"></i> Arrêter preview
-                </button>
+            <div class="mb-4 flex flex-wrap gap-2">
+                <button type="button" onclick="glToggleMute()" id="gl-btn-mute" class="{{ ctl_cls() }}"><i class="fas fa-microphone" id="gl-mic-icon"></i> <span id="gl-mic-label">Micro actif</span></button>
+                <button type="button" onclick="glToggleVideo()" id="gl-btn-vid" class="{{ ctl_cls() }}"><i class="fas fa-video" id="gl-vid-icon"></i> <span id="gl-vid-label">Vidéo active</span></button>
+                <button type="button" onclick="glStopPreview()" class="{{ ctl_cls() }}"><i class="fas fa-stop"></i> Arrêter preview</button>
             </div>
 
             <!-- Message erreur -->
-            <div id="gl-error" style="display:none;background:#fee2e2;border:1px solid #fecaca;color:#dc2626;padding:12px 16px;border-radius:10px;font-size:13px;margin-bottom:16px;">
+            <div id="gl-error" class="mb-4 hidden items-center gap-2 rounded-xl border border-accent/30 bg-accent/10 px-4 py-3 text-sm text-accent">
                 <i class="fas fa-exclamation-triangle"></i> <span id="gl-error-msg"></span>
             </div>
 
             <!-- Boutons nav -->
-            <div style="display:flex;gap:12px;">
-                <button onclick="glGoBack()" style="flex:1;border:1px solid #d1d5db;background:transparent;padding:13px;border-radius:12px;font-size:14px;font-weight:700;cursor:pointer;color:inherit;">
-                    <i class="fas fa-arrow-left"></i> Retour
-                </button>
-                <button id="gl-btn-go" onclick="glGoLive()" disabled
-                    style="flex:2;background:linear-gradient(135deg,#dc2626,#b91c1c);color:#fff;border:none;padding:13px;border-radius:12px;font-size:14px;font-weight:800;cursor:pointer;opacity:.4;display:flex;align-items:center;justify-content:center;gap:8px;transition:opacity .2s;">
-                    <i class="fas fa-circle" style="font-size:10px;animation:livePulse 1s infinite;"></i> Aller en direct
+            <div class="flex gap-3">
+                <button type="button" onclick="glGoBack()" class="flex items-center gap-2 rounded-xl border border-border px-5 py-3 text-sm font-medium text-ink-muted hover:text-ink"><i class="fas fa-arrow-left"></i> Retour</button>
+                <button type="button" id="gl-btn-go" onclick="glGoLive()" disabled class="flex flex-1 items-center justify-center gap-2 rounded-xl bg-accent py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90">
+                    <i class="fas fa-circle" style="font-size:10px"></i> Aller en direct
                 </button>
             </div>
         </div>
     </div>
 
     <!-- ÉTAPE 3 : EN DIRECT -->
-    <div id="step-live" style="display:none;">
-        <div style="background:#fff;border-radius:20px;padding:32px;border:1px solid #e5e7eb;box-shadow:0 2px 16px rgba(0,0,0,.06);">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px;">
-                <div style="display:flex;align-items:center;gap:10px;">
-                    <span style="width:14px;height:14px;background:#dc2626;border-radius:50%;display:inline-block;" class="live-badge"></span>
-                    <h2 style="font-size:1.1rem;font-weight:900;color:#dc2626;margin:0;">VOUS ÊTES EN DIRECT</h2>
+    <div id="step-live" class="hidden">
+        <div class="card p-6">
+            <div class="mb-4 flex items-center justify-between gap-3">
+                <div class="flex items-center gap-3">
+                    <span class="live-dot"></span>
+                    <h2 class="font-display text-base font-semibold">Vous êtes en direct</h2>
                 </div>
-                <div style="font-family:monospace;font-size:1rem;font-weight:700;color:#374151;background:#f3f4f6;padding:6px 14px;border-radius:8px;" id="gl-timer">00:00:00</div>
+                <div id="gl-timer" class="font-display tabular-nums text-xl font-semibold">00:00:00</div>
             </div>
 
             <!-- Vidéo live -->
-            <div style="background:#000;border-radius:14px;overflow:hidden;aspect-ratio:16/9;position:relative;margin-bottom:16px;">
-                <video id="gl-live-vid" autoplay muted playsinline style="width:100%;height:100%;object-fit:cover;"></video>
-                <div style="position:absolute;top:10px;left:10px;background:#dc2626;color:#fff;font-size:11px;font-weight:800;padding:4px 10px;border-radius:99px;" class="live-badge">EN DIRECT</div>
-                <div id="gl-viewers" style="position:absolute;top:10px;right:10px;background:rgba(0,0,0,.6);color:#fff;font-size:12px;padding:4px 10px;border-radius:99px;">0 spectateurs</div>
+            <div class="relative mb-4 w-full overflow-hidden rounded-2xl bg-black" style="aspect-ratio:16/9">
+                <video id="gl-live-vid" autoplay muted playsinline class="absolute inset-0 h-full w-full object-cover"></video>
+                <div class="pointer-events-none absolute left-3 top-3"><span class="inline-flex items-center gap-1.5 rounded-full bg-accent px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white"><span class="live-dot bg-white"></span>EN DIRECT</span></div>
+                <div id="gl-viewers" class="pointer-events-none absolute right-3 top-3 rounded-md bg-black/55 px-2 py-1 text-[11px] font-medium text-white backdrop-blur-sm">0 spectateurs</div>
             </div>
 
             <!-- Contrôles live -->
-            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">
-                <button onclick="glToggleMuteLive()" id="gl-btn-mute-live" style="display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;border:1px solid #d1d5db;background:transparent;cursor:pointer;font-size:13px;font-weight:600;color:inherit;">
-                    <i class="fas fa-microphone" id="gl-mic-live-icon"></i> <span id="gl-mic-live-label">Micro actif</span>
-                </button>
-                <button onclick="glToggleVideoLive()" style="display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;border:1px solid #d1d5db;background:transparent;cursor:pointer;font-size:13px;font-weight:600;color:inherit;">
-                    <i class="fas fa-video" id="gl-vid-live-icon"></i> <span id="gl-vid-live-label">Vidéo active</span>
-                </button>
-                <a id="gl-watch-link" href="#" target="_blank" style="display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;background:#dbeafe;color:#1d4ed8;text-decoration:none;font-size:13px;font-weight:600;">
-                    <i class="fas fa-external-link-alt"></i> Voir ma page
-                </a>
-                <button onclick="glCopyUrl()" style="display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;border:1px solid #d1d5db;background:transparent;cursor:pointer;font-size:13px;font-weight:600;color:inherit;">
-                    <i class="fas fa-copy"></i> Copier lien
-                </button>
+            <div class="mb-4 flex flex-wrap gap-2">
+                <button type="button" onclick="glToggleMuteLive()" id="gl-btn-mute-live" class="{{ ctl_cls() }}"><i class="fas fa-microphone" id="gl-mic-live-icon"></i> <span id="gl-mic-live-label">Micro actif</span></button>
+                <button type="button" onclick="glToggleVideoLive()" class="{{ ctl_cls() }}"><i class="fas fa-video" id="gl-vid-live-icon"></i> <span id="gl-vid-live-label">Vidéo active</span></button>
+                <a id="gl-watch-link" href="#" target="_blank" class="{{ ctl_cls() }}"><i class="fas fa-external-link-alt"></i> Voir ma page</a>
+                <button type="button" onclick="glCopyUrl()" class="{{ ctl_cls() }}"><i class="fas fa-copy"></i> Copier lien</button>
             </div>
 
             <!-- URL -->
-            <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:12px 16px;margin-bottom:16px;">
-                <div style="font-size:11px;font-weight:700;color:#9ca3af;margin-bottom:4px;">LIEN À PARTAGER</div>
-                <div id="gl-url-display" style="font-size:13px;font-family:monospace;color:#dc2626;word-break:break-all;"></div>
+            <div class="mb-5">
+                <p class="mb-1 text-xs font-medium text-ink-muted">Lien à partager</p>
+                <div id="gl-url-display" class="truncate rounded-xl border border-border bg-surface-2 px-4 py-3 text-sm"></div>
             </div>
 
-            <button onclick="glEndLive()" id="gl-btn-end"
-                style="width:100%;background:#dc2626;color:#fff;border:none;padding:14px;border-radius:12px;font-size:15px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:background .2s;"
-                onmouseover="this.style.background='#b91c1c'" onmouseout="this.style.background='#dc2626'">
+            <button type="button" onclick="glEndLive()" id="gl-btn-end" class="flex w-full items-center justify-center gap-2 rounded-xl bg-ink-muted py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90">
                 <i class="fas fa-stop-circle"></i> Terminer le live
             </button>
         </div>
     </div>
 
     <!-- ÉTAPE 4 : TERMINÉ -->
-    <div id="step-ended" style="display:none;">
-        <div style="background:#fff;border-radius:20px;padding:48px 32px;border:1px solid #e5e7eb;box-shadow:0 2px 16px rgba(0,0,0,.06);text-align:center;">
-            <div style="width:72px;height:72px;background:#dcfce7;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 20px;">
-                <i class="fas fa-check-circle" style="font-size:2rem;color:#16a34a;"></i>
-            </div>
-            <h2 style="font-size:1.4rem;font-weight:900;margin:0 0 10px;">Live terminé</h2>
-            <p style="color:#6b7280;margin:0 0 24px;font-size:14px;">Merci d'avoir streamé sur {{ app_name }} !</p>
-            <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
-                <a href="/" style="background:#dc2626;color:#fff;padding:12px 24px;border-radius:12px;text-decoration:none;font-weight:700;font-size:14px;">
-                    <i class="fas fa-home"></i> Accueil
-                </a>
-                <button onclick="glRestart()" style="background:#f3f4f6;border:none;padding:12px 24px;border-radius:12px;cursor:pointer;font-weight:700;font-size:14px;color:inherit;">
-                    <i class="fas fa-redo"></i> Nouveau live
-                </button>
+    <div id="step-ended" class="hidden">
+        <div class="card p-7 text-center">
+            <div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">{{ icon('circle-check', 26) }}</div>
+            <h2 class="font-display text-xl font-semibold">Live terminé</h2>
+            <p class="mt-1.5 text-sm text-ink-muted">Merci d'avoir streamé sur {{ app_name }} !</p>
+            <div class="mt-5 flex flex-wrap items-center justify-center gap-3">
+                <a href="/" class="flex items-center gap-2 rounded-xl border border-border px-5 py-2.5 text-sm font-medium text-ink-muted hover:text-ink"><i class="fas fa-home"></i> Accueil</a>
+                <button type="button" onclick="glRestart()" class="flex items-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-white hover:opacity-90"><i class="fas fa-redo"></i> Nouveau live</button>
             </div>
         </div>
     </div>
 </div>
+{% endblock %}
 
+{% block scripts %}
 <script>
+
 (function(){
     /* ═══ État ═══ */
     var _stream=null, _streamId=null, _liveUrl=null;
@@ -9379,8 +10163,7 @@ async function submitFeedback() {
             ['camera','screen','both'].forEach(function(k){
                 var b=document.getElementById('btn-src-'+k);
                 if(!b) return;
-                if(k===type){b.style.borderColor='#dc2626';b.style.background='#fee2e2';}
-                else{b.style.borderColor='#e5e7eb';b.style.background='transparent';}
+                b.classList.toggle('src-on', k===type);
             });
 
             _startVU(_stream);
@@ -9410,7 +10193,7 @@ async function submitFeedback() {
         _stopVU();
         ['camera','screen','both'].forEach(function(k){
             var b=document.getElementById('btn-src-'+k);
-            if(b){b.style.borderColor='#e5e7eb';b.style.background='transparent';}
+            if(b){b.classList.remove('src-on');}
         });
     };
 
@@ -9570,8 +10353,10 @@ async function submitFeedback() {
         glStopPreview();
     });
 })();
+
 </script>
-{% endblock %}'''
+{% endblock %}
+'''
     # ══════════════════════════════════════════════════════════════════
     # ADMIN DASHBOARD TEMPLATE — Complet et fonctionnel
     # ══════════════════════════════════════════════════════════════════
@@ -9579,104 +10364,70 @@ async function submitFeedback() {
 {% block title %}Dashboard Admin - {{ app_name }}{% endblock %}
 {% block head %}
 <style>
-/* ═══ ADMIN CSS — Indépendant de Tailwind, 100% fonctionnel ═══ */
-
-/* Tabs */
-.atab-nav { display:flex; overflow-x:auto; border-bottom:2px solid #e5e7eb; gap:0; -webkit-overflow-scrolling:touch; }
-html.dark .atab-nav { border-color:#374151; }
-.atab-btn {
-    flex-shrink:0; padding:10px 16px; font-size:13px; font-weight:700;
-    white-space:nowrap; cursor:pointer; border:none; background:transparent;
-    border-bottom:3px solid transparent; margin-bottom:-2px; color:#6b7280;
-    transition:all .15s ease; border-radius:8px 8px 0 0;
-}
-.atab-btn:hover { color:#dc2626; background:rgba(220,38,38,.05); }
-.atab-btn.on { border-bottom-color:#dc2626 !important; color:#dc2626 !important; background:#fff !important; }
-html.dark .atab-btn.on { background:#1f2937 !important; color:#f87171 !important; }
+/* ── Admin — habillé avec les tokens du design system (clair/sombre) ── */
+.atab-nav { display:flex; gap:8px; overflow-x:auto; padding:0 4px 4px; margin:0 -4px; scrollbar-width:none; -webkit-overflow-scrolling:touch; }
+.atab-nav::-webkit-scrollbar { display:none; }
+.atab-btn { flex-shrink:0; padding:8px 16px; font-size:14px; font-weight:500; white-space:nowrap; cursor:pointer; background:transparent;
+    border:1px solid var(--border); border-radius:999px; color:var(--ink-muted); transition:color .15s, background-color .15s, border-color .15s; }
+.atab-btn:hover { color:var(--ink); }
+.atab-btn.on { border-color:var(--accent-2) !important; background:var(--accent-2-soft) !important; color:var(--accent-2) !important; }
 .atab-panel { display:none; }
-.atab-panel.on { display:block; }
+.atab-panel.on { display:block; margin-top:16px; background:var(--surface) !important; border:1px solid var(--border) !important; border-radius:var(--radius-lg) !important; box-shadow:var(--shadow); }
 
-/* Stat cards */
-.astat {
-    background:#fff; border:1px solid #e5e7eb; border-radius:14px;
-    padding:16px; transition:all .2s;
-}
-.astat:hover { box-shadow:0 4px 18px rgba(0,0,0,.1); transform:translateY(-2px); }
-html.dark .astat { background:#1f2937; border-color:#374151; }
-/* Fix sous-cards internes de l'astat (Fréquentation, etc.) */
-html.dark .astat [style*="background:#f9fafb"],
-html.dark .astat [style*="background:#fff"] { background:#111827 !important; color:#f9fafb !important; }
+.astat { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); padding:18px; box-shadow:var(--shadow); }
 
-/* Table */
 .atable { width:100%; border-collapse:collapse; font-size:13px; }
-.atable th { padding:10px 14px; text-align:left; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#6b7280; background:#f9fafb; border-bottom:1px solid #e5e7eb; }
-html.dark .atable th { background:#111827; border-color:#374151; color:#9ca3af; }
-.atable td { padding:10px 14px; border-bottom:1px solid #f3f4f6; vertical-align:middle; color:inherit; }
-html.dark .atable td { border-color:#374151; }
-.atable tr:hover td { background:#f9fafb; }
-html.dark .atable tr:hover td { background:rgba(255,255,255,.03); }
+.atable th { padding:10px 14px; text-align:left; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-muted); background:var(--surface-2); border-bottom:1px solid var(--border); }
+.atable td { padding:10px 14px; border-bottom:1px solid var(--border); vertical-align:middle; color:inherit; }
+.atable tr:hover td { background:var(--surface-2); }
 
-/* Badges */
-.abadge { display:inline-flex; align-items:center; padding:2px 8px; border-radius:99px; font-size:11px; font-weight:700; }
-.ab-g { background:#dcfce7; color:#16a34a; }
-.ab-r { background:#fee2e2; color:#dc2626; }
-.ab-b { background:#dbeafe; color:#1d4ed8; }
-.ab-y { background:#fef9c3; color:#a16207; }
-.ab-gr { background:#f3f4f6; color:#4b5563; }
-html.dark .ab-g { background:#052e16; color:#4ade80; }
-html.dark .ab-r { background:#450a0a; color:#fca5a5; }
-html.dark .ab-b { background:#172554; color:#93c5fd; }
-html.dark .ab-y { background:#422006; color:#fde68a; }
-html.dark .ab-gr { background:#374151; color:#d1d5db; }
+.abadge { display:inline-flex; align-items:center; padding:2px 8px; border-radius:99px; font-size:11px; font-weight:600; }
+.ab-g  { background:color-mix(in srgb,#22c55e 15%,transparent); color:#16a34a; }
+.ab-r  { background:color-mix(in srgb,var(--accent) 12%,transparent); color:var(--accent); }
+.ab-b  { background:var(--accent-2-soft); color:var(--accent-2); }
+.ab-y  { background:color-mix(in srgb,#f59e0b 16%,transparent); color:#b45309; }
+.ab-gr { background:var(--surface-2); color:var(--ink-muted); }
+html.dark .ab-g { color:#4ade80; } html.dark .ab-y { color:#fbbf24; }
 
-/* Buttons */
-.abtn { display:inline-flex; align-items:center; gap:5px; padding:6px 12px; border-radius:8px; border:none; font-size:12px; font-weight:700; cursor:pointer; transition:all .15s; }
-.ab-btn-b { background:#dbeafe; color:#1d4ed8; } .ab-btn-b:hover { background:#bfdbfe; }
-.ab-btn-r { background:#fee2e2; color:#dc2626; } .ab-btn-r:hover { background:#fecaca; }
-.ab-btn-g { background:#dcfce7; color:#16a34a; } .ab-btn-g:hover { background:#bbf7d0; }
-.ab-btn-y { background:#fef9c3; color:#a16207; } .ab-btn-y:hover { background:#fef08a; }
-html.dark .ab-btn-b { background:#1e3a5f; color:#93c5fd; }
-html.dark .ab-btn-r { background:#450a0a; color:#fca5a5; }
-html.dark .ab-btn-g { background:#052e16; color:#4ade80; }
-html.dark .ab-btn-y { background:#422006; color:#fde68a; }
+.abtn { display:inline-flex; align-items:center; gap:5px; padding:7px 14px; border-radius:999px; border:1px solid transparent; font-size:12px; font-weight:600; cursor:pointer; transition:opacity .15s, background-color .15s; text-decoration:none; }
+.abtn:hover { opacity:.85; }
+.ab-btn-b  { background:var(--accent-2-soft); color:var(--accent-2); }
+.ab-btn-r  { background:color-mix(in srgb,var(--accent) 12%,transparent); color:var(--accent); }
+.ab-btn-g  { background:color-mix(in srgb,#22c55e 15%,transparent); color:#16a34a; }
+.ab-btn-y  { background:color-mix(in srgb,#f59e0b 16%,transparent); color:#b45309; }
+.ab-btn-gr { background:transparent; border-color:var(--border); color:var(--ink-muted); }
+html.dark .ab-btn-g { color:#4ade80; } html.dark .ab-btn-y { color:#fbbf24; }
 
-/* Input admin */
-.a-inp { width:100%; border:1px solid #d1d5db; border-radius:8px; padding:8px 12px; font-size:13px; outline:none; background:inherit; color:inherit; }
-.a-inp:focus { border-color:#dc2626; box-shadow:0 0 0 3px rgba(220,38,38,.12); }
-html.dark .a-inp { border-color:#4b5563; }
+.a-inp { width:100%; border:1px solid var(--border); border-radius:10px; padding:8px 12px; font-size:13px; outline:none; background:var(--surface); color:inherit; }
+.a-inp::placeholder { color:var(--ink-muted); }
+.a-inp:focus { border-color:var(--accent-2); }
 
-/* Pulse dot */
 .apulse { display:inline-block; width:8px; height:8px; border-radius:50%; background:#22c55e; animation:apulseAnim 2s infinite; }
 @keyframes apulseAnim { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(.8)} }
-
-/* Sparkline */
 #asp-bars { display:flex; align-items:flex-end; gap:2px; height:60px; }
 </style>
 {% endblock %}
 
 {% block content %}
-<div style="max-width:1400px;margin:0 auto;display:flex;flex-direction:column;gap:20px;">
+<div style="max-width:72rem;margin:0 auto;display:flex;flex-direction:column;gap:20px;">
 
 <!-- ═══ HEADER ═══ -->
-<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+<div class="flex flex-wrap items-center justify-between gap-3">
     <div>
-        <h1 style="font-size:1.5rem;font-weight:900;margin:0 0 4px;display:flex;align-items:center;gap:10px;">
-            <span style="width:36px;height:36px;background:linear-gradient(135deg,#dc2626,#f97316);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:16px;"></span>
-            Dashboard Admin
-        </h1>
-        <p style="font-size:13px;color:#6b7280;margin:0;display:flex;align-items:center;gap:8px;">
+        <h1 class="font-display text-2xl font-semibold">Administration</h1>
+        <p class="mt-1 flex flex-wrap items-center gap-2 text-sm text-ink-muted">
             <span class="apulse"></span>
-            Connecté : <strong>{{ user.username }}</strong>
-            {% if user.is_owner %}&nbsp;<span style="background:#f3e8ff;color:#7c3aed;font-size:11px;padding:2px 8px;border-radius:99px;font-weight:700;">Propriétaire</span>{% endif %}
-            {% if is_syncing %}&nbsp;<span style="color:#d97706;font-size:12px;font-weight:700;">Sync en cours...</span>
-            {% elif last_sync %}&nbsp;<span style="color:#9ca3af;font-size:12px;">Sync: {{ last_sync.strftime('%d/%m %H:%M') }}</span>{% endif %}
+            Connecté : <strong class="font-semibold text-ink">{{ user.username }}</strong>
+            {% if user.is_owner %}<span class="rounded-full bg-violet-500/15 px-2 py-0.5 text-[11px] font-semibold text-violet-600 dark:text-violet-400">Propriétaire</span>{% endif %}
+            {% if is_syncing %}<span class="text-xs font-semibold text-amber-600 dark:text-amber-400">Sync en cours...</span>
+            {% elif last_sync %}<span class="text-xs">Sync : {{ last_sync.strftime('%d/%m %H:%M') }}</span>{% endif %}
         </p>
     </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+    <div class="flex flex-wrap gap-2">
         <button onclick="aAction('/api/admin/iptv/sync','Lancer la synchronisation IPTV ? (quelques minutes)','POST')" class="abtn ab-btn-b">Sync IPTV</button>
-        <a href="/api/admin/config/export" class="abtn ab-btn-gr" style="text-decoration:none;background:#f3f4f6;color:#374151;">.env</a>
-        <a href="/" class="abtn" style="text-decoration:none;background:#f3f4f6;color:#374151;">Site</a>
-        <a href="/admin/logout" class="abtn ab-btn-r" style="text-decoration:none;">Déco</a>
+        <a href="/api/admin/config/export" class="abtn ab-btn-gr">.env</a>
+        <a href="/" class="abtn ab-btn-gr">Site</a>
+        <a href="/admin/logout" class="abtn ab-btn-gr" style="gap:6px"><i class="fas fa-sign-in-alt" style="transform:scaleX(-1)"></i> Déconnexion</a>
     </div>
 </div>
 
@@ -9710,92 +10461,92 @@ html.dark .a-inp { border-color:#4b5563; }
 </div>
 
 <!-- ═══ STATS GRAPHIQUE HISTORIQUE ═══ -->
-<div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:20px;" class="astat" style="background:inherit;">
+<div style="background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:20px;" class="astat" style="background:inherit;">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px;">
         <h2 style="font-size:15px;font-weight:800;margin:0;display:flex;align-items:center;gap:8px;">Fréquentation</h2>
         <div style="display:flex;gap:6px;">
             <button onclick="aLoadHistory('week',this)" id="ahb-week" class="abtn ab-btn-r" style="font-size:12px;padding:5px 12px;">7 jours</button>
-            <button onclick="aLoadHistory('month',this)" id="ahb-month" class="abtn ab-btn-gr" style="font-size:12px;padding:5px 12px;background:#f3f4f6;color:#374151;">30 jours</button>
-            <button onclick="aLoadHistory('year',this)" id="ahb-year" class="abtn ab-btn-gr" style="font-size:12px;padding:5px 12px;background:#f3f4f6;color:#374151;">12 mois</button>
+            <button onclick="aLoadHistory('month',this)" id="ahb-month" class="abtn ab-btn-gr" style="font-size:12px;padding:5px 12px;background:var(--surface-2);color:var(--ink);">30 jours</button>
+            <button onclick="aLoadHistory('year',this)" id="ahb-year" class="abtn ab-btn-gr" style="font-size:12px;padding:5px 12px;background:var(--surface-2);color:var(--ink);">12 mois</button>
         </div>
     </div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px;">
-        <div style="text-align:center;background:#f9fafb;border-radius:10px;padding:12px;">
-            <div id="ahk-u" style="font-size:1.5rem;font-weight:900;color:#dc2626;">—</div>
-            <div style="font-size:11px;color:#9ca3af;margin-top:2px;">Visiteurs uniques</div>
+        <div style="text-align:center;background:var(--surface-2);border-radius:10px;padding:12px;">
+            <div id="ahk-u" style="font-size:1.5rem;font-weight:900;color:var(--accent);">—</div>
+            <div style="font-size:11px;color:var(--ink-muted);margin-top:2px;">Visiteurs uniques</div>
         </div>
-        <div style="text-align:center;background:#f9fafb;border-radius:10px;padding:12px;">
-            <div id="ahk-v" style="font-size:1.5rem;font-weight:900;color:#2563eb;">—</div>
-            <div style="font-size:11px;color:#9ca3af;margin-top:2px;">Pages vues</div>
+        <div style="text-align:center;background:var(--surface-2);border-radius:10px;padding:12px;">
+            <div id="ahk-v" style="font-size:1.5rem;font-weight:900;color:var(--accent-2);">—</div>
+            <div style="font-size:11px;color:var(--ink-muted);margin-top:2px;">Pages vues</div>
         </div>
-        <div style="text-align:center;background:#f9fafb;border-radius:10px;padding:12px;">
+        <div style="text-align:center;background:var(--surface-2);border-radius:10px;padding:12px;">
             <div id="ahk-p" style="font-size:1.5rem;font-weight:900;color:#16a34a;">—</div>
-            <div style="font-size:11px;color:#9ca3af;margin-top:2px;">Pic simultané</div>
+            <div style="font-size:11px;color:var(--ink-muted);margin-top:2px;">Pic simultané</div>
         </div>
     </div>
     <div style="position:relative;height:200px;">
         <canvas id="ah-chart"></canvas>
-        <div id="ah-loading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;color:#9ca3af;">Chargement du graphique...</div>
+        <div id="ah-loading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--ink-muted);">Chargement du graphique...</div>
     </div>
 </div>
 
 <!-- ═══ STAT CARDS ═══ -->
 <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;">
     <div class="astat">
-        <div style="font-size:1.4rem;font-weight:900;color:#2563eb;" id="ast-streams">{{ stats.total_streams }}</div>
-        <div style="font-size:12px;color:#9ca3af;margin-top:2px;">Streams</div>
+        <div style="font-size:1.4rem;font-weight:900;color:var(--accent-2);" id="ast-streams">{{ stats.total_streams }}</div>
+        <div style="font-size:12px;color:var(--ink-muted);margin-top:2px;">Streams</div>
         <div style="font-size:11px;color:#22c55e;" id="ast-live">{{ stats.live_streams }} en direct</div>
     </div>
     <div class="astat">
         <div style="font-size:1.4rem;font-weight:900;color:#7c3aed;">{{ stats.iptv_channels }}</div>
-        <div style="font-size:12px;color:#9ca3af;margin-top:2px;">Chaînes TV</div>
-        <div style="font-size:11px;color:#9ca3af;">{{ stats.iptv_playlists }} playlists</div>
+        <div style="font-size:12px;color:var(--ink-muted);margin-top:2px;">Chaînes TV</div>
+        <div style="font-size:11px;color:var(--ink-muted);">{{ stats.iptv_playlists }} playlists</div>
     </div>
     <div class="astat">
         <div style="font-size:1.4rem;font-weight:900;color:#0891b2;" id="ast-visitors">{{ stats.total_visitors }}</div>
-        <div style="font-size:12px;color:#9ca3af;margin-top:2px;">Visiteurs</div>
-        <div style="font-size:11px;color:#9ca3af;">{{ stats.tracked_locations }} géolocalisés</div>
+        <div style="font-size:12px;color:var(--ink-muted);margin-top:2px;">Visiteurs</div>
+        <div style="font-size:11px;color:var(--ink-muted);">{{ stats.tracked_locations }} géolocalisés</div>
     </div>
     <div class="astat" style="position:relative;">
         <div style="font-size:1.4rem;font-weight:900;color:#d97706;">{{ stats.unread_feedback }}</div>
-        <div style="font-size:12px;color:#9ca3af;margin-top:2px;">Avis non lus</div>
-        <div style="font-size:11px;color:#9ca3af;">{{ stats.total_feedback }} total</div>
-        {% if stats.unread_feedback > 0 %}<div style="position:absolute;top:10px;right:10px;width:8px;height:8px;background:#dc2626;border-radius:50%;animation:apulseAnim 1.5s infinite;"></div>{% endif %}
+        <div style="font-size:12px;color:var(--ink-muted);margin-top:2px;">Avis non lus</div>
+        <div style="font-size:11px;color:var(--ink-muted);">{{ stats.total_feedback }} total</div>
+        {% if stats.unread_feedback > 0 %}<div style="position:absolute;top:10px;right:10px;width:8px;height:8px;background:var(--accent);border-radius:50%;animation:apulseAnim 1.5s infinite;"></div>{% endif %}
     </div>
     <div class="astat">
         <div style="font-size:1.4rem;font-weight:900;color:#16a34a;">{{ stats.active_announcements }}</div>
-        <div style="font-size:12px;color:#9ca3af;margin-top:2px;">Annonces actives</div>
-        <div style="font-size:11px;color:#9ca3af;">{{ stats.total_events }} événements EPG</div>
+        <div style="font-size:12px;color:var(--ink-muted);margin-top:2px;">Annonces actives</div>
+        <div style="font-size:11px;color:var(--ink-muted);">{{ stats.total_events }} événements EPG</div>
     </div>
     <div class="astat">
-        <div style="font-size:1.4rem;font-weight:900;color:#dc2626;">{{ stats.blocked_ips }}</div>
-        <div style="font-size:12px;color:#9ca3af;margin-top:2px;">IPs bloquées</div>
-        <div style="font-size:11px;color:#dc2626;">{{ stats.total_reports }} signalements</div>
+        <div style="font-size:1.4rem;font-weight:900;color:var(--accent);">{{ stats.blocked_ips }}</div>
+        <div style="font-size:12px;color:var(--ink-muted);margin-top:2px;">IPs bloquées</div>
+        <div style="font-size:11px;color:var(--accent);">{{ stats.total_reports }} signalements</div>
     </div>
 </div>
 
 <!-- ═══ DB STATUS ═══ -->
-<div id="adb-bar" style="display:none;background:#fee2e2;border:1px solid #fecaca;color:#dc2626;padding:10px 16px;border-radius:10px;font-size:13px;font-weight:600;">
+<div id="adb-bar" style="display:none;background:color-mix(in srgb,var(--accent) 12%,transparent);border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);color:var(--accent);padding:10px 16px;border-radius:10px;font-size:13px;font-weight:600;">
     <span id="adb-msg">PostgreSQL : vérification...</span>
 </div>
 
 <!-- ═══ TABS ═══ -->
 <div>
     <div class="atab-nav">
-        <button class="atab-btn on"  onclick="aShowTab('streams',this)">Streams <span style="font-size:11px;background:#f3f4f6;padding:1px 6px;border-radius:99px;margin-left:4px;">{{ stats.total_streams }}</span></button>
-        <button class="atab-btn"     onclick="aShowTab('external',this)">Flux ext. <span style="font-size:11px;background:#f3f4f6;padding:1px 6px;border-radius:99px;margin-left:4px;">{{ stats.external_streams }}</span></button>
-        <button class="atab-btn"     onclick="aShowTab('iptv',this)">TV <span style="font-size:11px;background:#f3f4f6;padding:1px 6px;border-radius:99px;margin-left:4px;">{{ stats.iptv_playlists }}</span></button>
-        <button class="atab-btn"     onclick="aShowTab('feedback',this)">Avis {% if stats.unread_feedback > 0 %}<span style="font-size:11px;background:#fee2e2;color:#dc2626;padding:1px 6px;border-radius:99px;margin-left:4px;">{{ stats.unread_feedback }}</span>{% endif %}</button>
-        <button class="atab-btn"     onclick="aShowTab('announcements',this)">Annonces <span style="font-size:11px;background:#fef9c3;color:#a16207;padding:1px 6px;border-radius:99px;margin-left:4px;">{{ stats.active_announcements }}</span></button>
+        <button class="atab-btn on"  onclick="aShowTab('streams',this)">Streams <span style="font-size:11px;background:var(--surface-2);padding:1px 6px;border-radius:99px;margin-left:4px;">{{ stats.total_streams }}</span></button>
+        <button class="atab-btn"     onclick="aShowTab('external',this)">Flux ext. <span style="font-size:11px;background:var(--surface-2);padding:1px 6px;border-radius:99px;margin-left:4px;">{{ stats.external_streams }}</span></button>
+        <button class="atab-btn"     onclick="aShowTab('iptv',this)">TV <span style="font-size:11px;background:var(--surface-2);padding:1px 6px;border-radius:99px;margin-left:4px;">{{ stats.iptv_playlists }}</span></button>
+        <button class="atab-btn"     onclick="aShowTab('feedback',this)">Avis {% if stats.unread_feedback > 0 %}<span style="font-size:11px;background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--accent);padding:1px 6px;border-radius:99px;margin-left:4px;">{{ stats.unread_feedback }}</span>{% endif %}</button>
+        <button class="atab-btn"     onclick="aShowTab('announcements',this)">Annonces <span style="font-size:11px;background:color-mix(in srgb,#f59e0b 16%,transparent);color:#a16207;padding:1px 6px;border-radius:99px;margin-left:4px;">{{ stats.active_announcements }}</span></button>
         <button class="atab-btn"     onclick="aShowTab('comments',this)">Chat</button>
-        <button class="atab-btn"     onclick="aShowTab('reports',this)">Signalements{% if stats.total_reports > 0 %} <span style="font-size:11px;background:#fee2e2;color:#dc2626;padding:1px 6px;border-radius:99px;margin-left:4px;">{{ stats.total_reports }}</span>{% endif %}</button>
+        <button class="atab-btn"     onclick="aShowTab('reports',this)">Signalements{% if stats.total_reports > 0 %} <span style="font-size:11px;background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--accent);padding:1px 6px;border-radius:99px;margin-left:4px;">{{ stats.total_reports }}</span>{% endif %}</button>
         <button class="atab-btn"     onclick="aShowTab('ips',this)">IPs</button>
     </div>
 
     <!-- ── Tab: Streams utilisateur ── -->
-    <div id="atab-streams" class="atab-panel on" style="background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
-        <style>html.dark .atab-panel{background:#1f2937;border-color:#374151;}</style>
-        <div style="padding:14px 16px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+    <div id="atab-streams" class="atab-panel on" style="background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 12px 12px;">
+        
+        <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
             <h3 style="font-weight:700;margin:0;font-size:14px;">Streams utilisateurs</h3>
         </div>
         <div style="overflow-x:auto;">
@@ -9811,8 +10562,8 @@ html.dark .a-inp { border-color:#4b5563; }
                         {% elif s.is_blocked %}<span class="abadge ab-r">Bloqué</span>
                         {% else %}<span class="abadge ab-gr">Terminé</span>{% endif %}
                     </td>
-                    <td style="color:#6b7280;">{{ s.viewer_count }}</td>
-                    <td style="font-size:11px;color:#9ca3af;">{{ s.created_at.strftime('%d/%m %H:%M') }}</td>
+                    <td style="color:var(--ink-muted);">{{ s.viewer_count }}</td>
+                    <td style="font-size:11px;color:var(--ink-muted);">{{ s.created_at.strftime('%d/%m %H:%M') }}</td>
                     <td>
                         <div style="display:flex;gap:6px;flex-wrap:wrap;">
                             <a href="/watch/user/{{ s.id }}" target="_blank" class="abtn ab-btn-b"></a>
@@ -9825,7 +10576,7 @@ html.dark .a-inp { border-color:#4b5563; }
                     </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="6" style="text-align:center;padding:32px;color:#9ca3af;font-size:13px;">Aucun stream</td></tr>
+                <tr><td colspan="6" style="text-align:center;padding:32px;color:var(--ink-muted);font-size:13px;">Aucun stream</td></tr>
                 {% endfor %}
                 </tbody>
             </table>
@@ -9833,8 +10584,8 @@ html.dark .a-inp { border-color:#4b5563; }
     </div>
 
     <!-- ── Tab: Flux externes ── -->
-    <div id="atab-external" class="atab-panel" style="background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
-        <div style="padding:14px 16px;border-bottom:1px solid #e5e7eb;"><h3 style="font-weight:700;margin:0;font-size:14px;">Flux externes ({{ stats.external_streams }})</h3></div>
+    <div id="atab-external" class="atab-panel" style="background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 12px 12px;">
+        <div style="padding:14px 16px;border-bottom:1px solid var(--border);"><h3 style="font-weight:700;margin:0;font-size:14px;">Flux externes ({{ stats.external_streams }})</h3></div>
         <div style="overflow-x:auto;">
             <table class="atable">
                 <thead><tr><th>Titre</th><th>Catégorie</th><th>Pays</th><th>Type</th><th>Statut</th><th>Actions</th></tr></thead>
@@ -9858,7 +10609,7 @@ html.dark .a-inp { border-color:#4b5563; }
                     </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="6" style="text-align:center;padding:32px;color:#9ca3af;font-size:13px;">Aucun flux externe</td></tr>
+                <tr><td colspan="6" style="text-align:center;padding:32px;color:var(--ink-muted);font-size:13px;">Aucun flux externe</td></tr>
                 {% endfor %}
                 </tbody>
             </table>
@@ -9866,8 +10617,8 @@ html.dark .a-inp { border-color:#4b5563; }
     </div>
 
     <!-- ── Tab: IPTV/TV ── -->
-    <div id="atab-iptv" class="atab-panel" style="background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
-        <div style="padding:14px 16px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;">
+    <div id="atab-iptv" class="atab-panel" style="background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 12px 12px;">
+        <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;">
             <h3 style="font-weight:700;margin:0;font-size:14px;">Playlists Chaînes TV</h3>
             <button onclick="aAction('/api/admin/iptv/sync','Lancer la synchronisation ?')" class="abtn ab-btn-b">Sync tout</button>
         </div>
@@ -9883,8 +10634,8 @@ html.dark .a-inp { border-color:#4b5563; }
                             <span style="font-weight:600;font-size:13px;">{{ pl.display_name or pl.name }}</span>
                         </div>
                     </td>
-                    <td style="font-weight:700;color:#374151;">{{ pl.channel_count or 0 }}</td>
-                    <td style="font-size:12px;color:#9ca3af;">{{ pl.last_sync.strftime('%d/%m %H:%M') if pl.last_sync else 'Jamais' }}</td>
+                    <td style="font-weight:700;color:var(--ink);">{{ pl.channel_count or 0 }}</td>
+                    <td style="font-size:12px;color:var(--ink-muted);">{{ pl.last_sync.strftime('%d/%m %H:%M') if pl.last_sync else 'Jamais' }}</td>
                     <td>
                         {% if pl.sync_status == 'success' %}<span class="abadge ab-g">OK</span>
                         {% elif pl.sync_status == 'error' %}<span class="abadge ab-r" title="{{ pl.sync_error }}">Erreur</span>
@@ -9895,7 +10646,7 @@ html.dark .a-inp { border-color:#4b5563; }
                     </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="5" style="text-align:center;padding:32px;color:#9ca3af;font-size:13px;">Aucune playlist</td></tr>
+                <tr><td colspan="5" style="text-align:center;padding:32px;color:var(--ink-muted);font-size:13px;">Aucune playlist</td></tr>
                 {% endfor %}
                 </tbody>
             </table>
@@ -9903,8 +10654,8 @@ html.dark .a-inp { border-color:#4b5563; }
     </div>
 
     <!-- ── Tab: Avis utilisateurs ── -->
-    <div id="atab-feedback" class="atab-panel" style="background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
-        <div style="padding:14px 16px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;">
+    <div id="atab-feedback" class="atab-panel" style="background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 12px 12px;">
+        <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;">
             <h3 style="font-weight:700;margin:0;font-size:14px;">Avis des utilisateurs</h3>
             {% if stats.unread_feedback > 0 %}<span class="abadge ab-r">{{ stats.unread_feedback }} non lu(s)</span>{% endif %}
         </div>
@@ -9914,15 +10665,15 @@ html.dark .a-inp { border-color:#4b5563; }
                 <tbody>
                 {% for fb in feedbacks %}
                 <tr id="fbr-{{ fb.id }}" style="{% if not fb.is_read %}background:rgba(251,191,36,.06);{% endif %}">
-                    <td style="font-size:1rem;color:#f59e0b;white-space:nowrap;">{% for i in range(fb.rating) %}★{% endfor %}{% for i in range(5-fb.rating) %}<span style="color:#e5e7eb;">★</span>{% endfor %}</td>
+                    <td style="font-size:1rem;color:#f59e0b;white-space:nowrap;">{% for i in range(fb.rating) %}★{% endfor %}{% for i in range(5-fb.rating) %}<span style="color:var(--border);">★</span>{% endfor %}</td>
                     <td style="max-width:280px;">
                         <div style="font-size:13px;{% if not fb.is_read %}font-weight:700;{% endif %}overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ fb.message[:180] }}{% if fb.message|length > 180 %}...{% endif %}</div>
                     </td>
                     <td>
-                        {% if fb.email %}<a href="mailto:{{ fb.email }}" style="color:#2563eb;font-size:12px;text-decoration:none;">{{ fb.email }}</a>
-                        {% else %}<span style="color:#9ca3af;font-size:12px;">—</span>{% endif %}
+                        {% if fb.email %}<a href="mailto:{{ fb.email }}" style="color:var(--accent-2);font-size:12px;text-decoration:none;">{{ fb.email }}</a>
+                        {% else %}<span style="color:var(--ink-muted);font-size:12px;">—</span>{% endif %}
                     </td>
-                    <td style="font-size:11px;color:#9ca3af;white-space:nowrap;">{{ fb.created_at.strftime('%d/%m/%Y %H:%M') }}</td>
+                    <td style="font-size:11px;color:var(--ink-muted);white-space:nowrap;">{{ fb.created_at.strftime('%d/%m/%Y %H:%M') }}</td>
                     <td>
                         <div style="display:flex;gap:6px;">
                             {% if not fb.is_read %}
@@ -9933,7 +10684,7 @@ html.dark .a-inp { border-color:#4b5563; }
                     </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="5" style="text-align:center;padding:32px;color:#9ca3af;font-size:13px;">Aucun avis reçu</td></tr>
+                <tr><td colspan="5" style="text-align:center;padding:32px;color:var(--ink-muted);font-size:13px;">Aucun avis reçu</td></tr>
                 {% endfor %}
                 </tbody>
             </table>
@@ -9941,17 +10692,17 @@ html.dark .a-inp { border-color:#4b5563; }
     </div>
 
     <!-- ── Tab: Annonces ── -->
-    <div id="atab-announcements" class="atab-panel" style="background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
+    <div id="atab-announcements" class="atab-panel" style="background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 12px 12px;">
         <!-- Formulaire création -->
-        <div style="padding:20px;border-bottom:1px solid #e5e7eb;">
+        <div style="padding:20px;border-bottom:1px solid var(--border);">
             <h3 style="font-weight:700;margin:0 0 16px;font-size:14px;">Créer une annonce</h3>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
                 <div>
-                    <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#9ca3af;display:block;margin-bottom:4px;">Titre *</label>
+                    <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-muted);display:block;margin-bottom:4px;">Titre *</label>
                     <input type="text" id="ann-title" maxlength="200" placeholder="Titre de l'annonce" class="a-inp">
                 </div>
                 <div>
-                    <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#9ca3af;display:block;margin-bottom:4px;">Type</label>
+                    <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-muted);display:block;margin-bottom:4px;">Type</label>
                     <select id="ann-type" class="a-inp">
                         <option value="info">Information</option>
                         <option value="warning">Important</option>
@@ -9961,16 +10712,16 @@ html.dark .a-inp { border-color:#4b5563; }
                 </div>
             </div>
             <div style="margin-bottom:12px;">
-                <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#9ca3af;display:block;margin-bottom:4px;">Message *</label>
+                <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-muted);display:block;margin-bottom:4px;">Message *</label>
                 <textarea id="ann-message" rows="3" maxlength="2000" placeholder="Message qui sera visible par tous les utilisateurs dans la page Événements..." class="a-inp" style="resize:vertical;"></textarea>
             </div>
             <div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;">
                 <div>
-                    <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#9ca3af;display:block;margin-bottom:4px;">Expiration (heures, 0 = jamais)</label>
+                    <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-muted);display:block;margin-bottom:4px;">Expiration (heures, 0 = jamais)</label>
                     <input type="number" id="ann-expires" min="0" max="8760" value="0" style="width:120px;" class="a-inp">
                 </div>
                 <button onclick="aCreateAnn()" id="ann-submit-btn"
-                    style="background:#dc2626;color:#fff;border:none;padding:10px 24px;border-radius:10px;font-size:14px;font-weight:800;cursor:pointer;display:flex;align-items:center;gap:8px;transition:background .2s;"
+                    style="background:var(--accent);color:#fff;border:none;padding:10px 24px;border-radius:10px;font-size:14px;font-weight:800;cursor:pointer;display:flex;align-items:center;gap:8px;transition:background .2s;"
                     onmouseover="this.style.background='#b91c1c'" onmouseout="this.style.background='#dc2626'">
                     Publier l'annonce
                 </button>
@@ -9986,8 +10737,8 @@ html.dark .a-inp { border-color:#4b5563; }
                 <tr id="annr-{{ ann.id }}">
                     <td style="font-size:1.2rem;">{% if ann.type=='info' %}{% elif ann.type=='warning' %}{% elif ann.type=='update' %}{% elif ann.type=='feature' %}{% else %}{% endif %}</td>
                     <td style="font-weight:700;font-size:13px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ ann.title }}</td>
-                    <td style="font-size:12px;color:#6b7280;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ ann.message[:90] }}...</td>
-                    <td style="font-size:11px;color:#9ca3af;white-space:nowrap;">{{ ann.created_at.strftime('%d/%m %H:%M') }}</td>
+                    <td style="font-size:12px;color:var(--ink-muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ ann.message[:90] }}...</td>
+                    <td style="font-size:11px;color:var(--ink-muted);white-space:nowrap;">{{ ann.created_at.strftime('%d/%m %H:%M') }}</td>
                     <td>{% if ann.is_active %}<span class="abadge ab-g">Active</span>{% else %}<span class="abadge ab-gr">Off</span>{% endif %}</td>
                     <td>
                         <div style="display:flex;gap:6px;">
@@ -9997,7 +10748,7 @@ html.dark .a-inp { border-color:#4b5563; }
                     </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="6" style="text-align:center;padding:32px;color:#9ca3af;font-size:13px;">Aucune annonce créée. Utilisez le formulaire ci-dessus.</td></tr>
+                <tr><td colspan="6" style="text-align:center;padding:32px;color:var(--ink-muted);font-size:13px;">Aucune annonce créée. Utilisez le formulaire ci-dessus.</td></tr>
                 {% endfor %}
                 </tbody>
             </table>
@@ -10005,8 +10756,8 @@ html.dark .a-inp { border-color:#4b5563; }
     </div>
 
     <!-- ── Tab: Chat/Commentaires ── -->
-    <div id="atab-comments" class="atab-panel" style="background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
-        <div style="padding:14px 16px;border-bottom:1px solid #e5e7eb;"><h3 style="font-weight:700;margin:0;font-size:14px;">Commentaires Chat ({{ stats.total_comments }})</h3></div>
+    <div id="atab-comments" class="atab-panel" style="background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 12px 12px;">
+        <div style="padding:14px 16px;border-bottom:1px solid var(--border);"><h3 style="font-weight:700;margin:0;font-size:14px;">Commentaires Chat ({{ stats.total_comments }})</h3></div>
         <div style="overflow-x:auto;">
             <table class="atable">
                 <thead><tr><th>Contenu</th><th>Date</th><th>Signalements</th><th>Statut</th><th>Actions</th></tr></thead>
@@ -10014,7 +10765,7 @@ html.dark .a-inp { border-color:#4b5563; }
                 {% for c in recent_comments %}
                 <tr id="cmtr-{{ c.id }}">
                     <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;">{{ c.content[:120] }}</td>
-                    <td style="font-size:11px;color:#9ca3af;white-space:nowrap;">{{ c.created_at.strftime('%d/%m %H:%M') }}</td>
+                    <td style="font-size:11px;color:var(--ink-muted);white-space:nowrap;">{{ c.created_at.strftime('%d/%m %H:%M') }}</td>
                     <td><span class="abadge {% if c.report_count > 0 %}ab-r{% else %}ab-gr{% endif %}">{{ c.report_count }}</span></td>
                     <td>{% if c.is_deleted %}<span class="abadge ab-r">Supprimé</span>{% elif c.is_auto_hidden %}<span class="abadge ab-y">Masqué auto</span>{% else %}<span class="abadge ab-g">Visible</span>{% endif %}</td>
                     <td>
@@ -10024,7 +10775,7 @@ html.dark .a-inp { border-color:#4b5563; }
                     </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="5" style="text-align:center;padding:32px;color:#9ca3af;font-size:13px;">Aucun commentaire</td></tr>
+                <tr><td colspan="5" style="text-align:center;padding:32px;color:var(--ink-muted);font-size:13px;">Aucun commentaire</td></tr>
                 {% endfor %}
                 </tbody>
             </table>
@@ -10032,8 +10783,8 @@ html.dark .a-inp { border-color:#4b5563; }
     </div>
 
     <!-- ── Tab: Signalements ── -->
-    <div id="atab-reports" class="atab-panel" style="background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
-        <div style="padding:14px 16px;border-bottom:1px solid #e5e7eb;"><h3 style="font-weight:700;margin:0;font-size:14px;">Signalements ({{ stats.total_reports }})</h3></div>
+    <div id="atab-reports" class="atab-panel" style="background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 12px 12px;">
+        <div style="padding:14px 16px;border-bottom:1px solid var(--border);"><h3 style="font-weight:700;margin:0;font-size:14px;">Signalements ({{ stats.total_reports }})</h3></div>
         <div style="overflow-x:auto;">
             <table class="atable">
                 <thead><tr><th>Raison</th><th>Date</th><th>Statut</th><th>Actions</th></tr></thead>
@@ -10041,7 +10792,7 @@ html.dark .a-inp { border-color:#4b5563; }
                 {% for r in pending_reports %}
                 <tr id="rptr-{{ r.id }}">
                     <td style="font-size:13px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ r.reason }}</td>
-                    <td style="font-size:11px;color:#9ca3af;white-space:nowrap;">{{ r.created_at.strftime('%d/%m %H:%M') }}</td>
+                    <td style="font-size:11px;color:var(--ink-muted);white-space:nowrap;">{{ r.created_at.strftime('%d/%m %H:%M') }}</td>
                     <td>{% if r.resolved %}<span class="abadge ab-g">Résolu</span>{% else %}<span class="abadge ab-r">En attente</span>{% endif %}</td>
                     <td>
                         {% if not r.resolved %}
@@ -10050,7 +10801,7 @@ html.dark .a-inp { border-color:#4b5563; }
                     </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="4" style="text-align:center;padding:32px;color:#9ca3af;font-size:13px;">Aucun signalement en attente</td></tr>
+                <tr><td colspan="4" style="text-align:center;padding:32px;color:var(--ink-muted);font-size:13px;">Aucun signalement en attente</td></tr>
                 {% endfor %}
                 </tbody>
             </table>
@@ -10058,17 +10809,17 @@ html.dark .a-inp { border-color:#4b5563; }
     </div>
 
     <!-- ── Tab: IPs bloquées ── -->
-    <div id="atab-ips" class="atab-panel" style="background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
+    <div id="atab-ips" class="atab-panel" style="background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 12px 12px;">
         <!-- Formulaire bloquer IP -->
-        <div style="padding:16px;border-bottom:1px solid #e5e7eb;">
+        <div style="padding:16px;border-bottom:1px solid var(--border);">
             <h3 style="font-weight:700;margin:0 0 12px;font-size:14px;">Bloquer une IP</h3>
             <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
                 <div>
-                    <label style="font-size:11px;font-weight:700;color:#9ca3af;display:block;margin-bottom:4px;">Adresse IP</label>
+                    <label style="font-size:11px;font-weight:700;color:var(--ink-muted);display:block;margin-bottom:4px;">Adresse IP</label>
                     <input type="text" id="aip-addr" placeholder="Ex: 192.168.1.1" class="a-inp" style="width:180px;">
                 </div>
                 <div>
-                    <label style="font-size:11px;font-weight:700;color:#9ca3af;display:block;margin-bottom:4px;">Raison</label>
+                    <label style="font-size:11px;font-weight:700;color:var(--ink-muted);display:block;margin-bottom:4px;">Raison</label>
                     <input type="text" id="aip-reason" placeholder="Raison du blocage" class="a-inp" style="width:240px;">
                 </div>
                 <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;">
@@ -10085,14 +10836,14 @@ html.dark .a-inp { border-color:#4b5563; }
                 <tr id="ipr-{{ ip.id }}">
                     <td style="font-family:monospace;font-size:13px;font-weight:700;">{{ ip.ip_address }}</td>
                     <td style="font-size:13px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ ip.reason }}</td>
-                    <td style="font-size:11px;color:#9ca3af;white-space:nowrap;">{{ ip.blocked_at.strftime('%d/%m/%Y %H:%M') }}</td>
-                    <td style="font-size:11px;color:#9ca3af;white-space:nowrap;">{% if ip.is_permanent %}<span class="abadge ab-r">Permanent</span>{% elif ip.expires_at %}{{ ip.expires_at.strftime('%d/%m/%Y') }}{% else %}—{% endif %}</td>
+                    <td style="font-size:11px;color:var(--ink-muted);white-space:nowrap;">{{ ip.blocked_at.strftime('%d/%m/%Y %H:%M') }}</td>
+                    <td style="font-size:11px;color:var(--ink-muted);white-space:nowrap;">{% if ip.is_permanent %}<span class="abadge ab-r">Permanent</span>{% elif ip.expires_at %}{{ ip.expires_at.strftime('%d/%m/%Y') }}{% else %}—{% endif %}</td>
                     <td>
                         <button onclick="aAction('/api/admin/ips/{{ ip.id }}/unblock','Débloquer cette IP ?')" class="abtn ab-btn-g">Débloquer</button>
                     </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="5" style="text-align:center;padding:32px;color:#9ca3af;font-size:13px;">Aucune IP bloquée</td></tr>
+                <tr><td colspan="5" style="text-align:center;padding:32px;color:var(--ink-muted);font-size:13px;">Aucune IP bloquée</td></tr>
                 {% endfor %}
                 </tbody>
             </table>
@@ -10101,14 +10852,14 @@ html.dark .a-inp { border-color:#4b5563; }
 </div><!-- end tabs -->
 
 <!-- ═══ CARTE DU MONDE ═══ (EN DEHORS DES TABS) -->
-<div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;overflow:hidden;" class="astat">
-    <div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+<div style="background:var(--surface);border:1px solid var(--border);border-radius:18px;overflow:hidden;" class="astat">
+    <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
         <div>
             <h2 style="font-weight:800;font-size:15px;margin:0;">Carte des utilisateurs</h2>
-            <p style="font-size:12px;color:#9ca3af;margin:2px 0 0;">Localisation géographique de vos visiteurs (basée sur IP)</p>
+            <p style="font-size:12px;color:var(--ink-muted);margin:2px 0 0;">Localisation géographique de vos visiteurs (basée sur IP)</p>
         </div>
         <div style="display:flex;align-items:center;gap:10px;">
-            <span id="amap-total" style="font-size:12px;padding:4px 12px;background:#dbeafe;color:#1d4ed8;border-radius:99px;font-weight:700;">Chargement...</span>
+            <span id="amap-total" style="font-size:12px;padding:4px 12px;background:var(--accent-2-soft);color:var(--accent-2);border-radius:99px;font-weight:700;">Chargement...</span>
             <button onclick="aLoadMap(true)" class="abtn ab-btn-b">Actualiser</button>
         </div>
     </div>
@@ -10116,9 +10867,9 @@ html.dark .a-inp { border-color:#4b5563; }
         <!-- Leaflet Map -->
         <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
         <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <div id="amap-container" style="position:relative;border-radius:12px;overflow:hidden;height:420px;margin-bottom:16px;border:1px solid #e5e7eb;">
-            <div id="amap-loading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;color:#6b7280;z-index:1000;background:rgba(255,255,255,.9);">
-                <i class="fas fa-spinner fa-spin" style="font-size:2rem;color:#2563eb;"></i>
+        <div id="amap-container" style="position:relative;border-radius:12px;overflow:hidden;height:420px;margin-bottom:16px;border:1px solid var(--border);">
+            <div id="amap-loading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;color:var(--ink-muted);z-index:1000;background:rgba(255,255,255,.9);">
+                <i class="fas fa-spinner fa-spin" style="font-size:2rem;color:var(--accent-2);"></i>
                 <p style="font-size:13px;margin:0;">Chargement de la carte...</p>
             </div>
             <div id="amap-leaflet" style="width:100%;height:100%;"></div>
@@ -10129,13 +10880,13 @@ html.dark .a-inp { border-color:#4b5563; }
             <div>
                 <h3 style="font-size:13px;font-weight:700;margin:0 0 10px;">Top pays</h3>
                 <div id="amap-countries" class="custom-scroll" style="max-height:200px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;">
-                    <p style="font-size:12px;color:#9ca3af;">Chargement...</p>
+                    <p style="font-size:12px;color:var(--ink-muted);">Chargement...</p>
                 </div>
             </div>
             <div>
                 <h3 style="font-size:13px;font-weight:700;margin:0 0 10px;">Par continent</h3>
                 <div id="amap-continents" style="display:flex;flex-direction:column;gap:6px;">
-                    <p style="font-size:12px;color:#9ca3af;">Chargement...</p>
+                    <p style="font-size:12px;color:var(--ink-muted);">Chargement...</p>
                 </div>
             </div>
         </div>
@@ -10289,8 +11040,8 @@ async function aCreateAnn() {
 function _annFb(msg, ok) {
     var el = document.getElementById('ann-feedback');
     el.textContent = msg;
-    el.style.background = ok ? '#dcfce7' : '#fee2e2';
-    el.style.color = ok ? '#16a34a' : '#dc2626';
+    el.style.background = ok ? 'color-mix(in srgb,#22c55e 15%,transparent)' : 'color-mix(in srgb,var(--accent) 12%,transparent)';
+    el.style.color = ok ? '#16a34a' : 'var(--accent)';
     el.style.border = '1px solid ' + (ok ? '#bbf7d0' : '#fecaca');
     el.style.display = 'block';
 }
@@ -10330,7 +11081,7 @@ async function aLoadHistory(period, btn) {
         if (k === period) {
             b.style.background = '#dc2626'; b.style.color = '#fff';
         } else {
-            b.style.background = '#f3f4f6'; b.style.color = '#374151';
+            b.style.background = 'var(--surface-2)'; b.style.color = 'var(--ink)';
         }
     });
 
@@ -10563,7 +11314,7 @@ function aLoadMap(force) {
             if (loading) loading.style.display = 'none';
         })
         .catch(function(e){
-            if (loading) loading.innerHTML = '<p style="color:#dc2626;font-size:13px;z-index:1001;position:relative;">Erreur: '+e.message+'</p>';
+            if (loading) loading.innerHTML = '<p style="color:var(--accent);font-size:13px;z-index:1001;position:relative;">Erreur: '+e.message+'</p>';
         });
 }
 
@@ -10613,7 +11364,7 @@ function _renderLeafletMap(data) {
         circle.bindPopup(
             '<div style="font-size:13px;font-weight:700;display:flex;align-items:center;gap:4px;">'
             + flag + (c.country || 'Inconnu') + '</div>'
-            + '<div style="font-size:12px;color:#6b7280;margin-top:3px;">'
+            + '<div style="font-size:12px;color:var(--ink-muted);margin-top:3px;">'
             + '<b>' + c.count + '</b> visiteur' + (c.count > 1 ? 's' : '')
             + (c.cities && c.cities.length ? '<br><span style="font-size:11px;">'+c.cities.slice(0,3).join(', ')+'</span>' : '')
             + '</div>'
@@ -10669,10 +11420,10 @@ function _renderCountries(countries) {
         return '<div style="display:flex;align-items:center;gap:6px;">'
             + flag
             + '<div style="font-size:12px;font-weight:600;width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + (c.country||'Inconnu') + '</div>'
-            + '<div style="flex:1;background:#f3f4f6;border-radius:2px;height:6px;">'
-            + '<div style="background:#dc2626;height:6px;border-radius:2px;width:'+pct+'%;transition:width .5s;"></div>'
+            + '<div style="flex:1;background:var(--surface-2);border-radius:2px;height:6px;">'
+            + '<div style="background:var(--accent);height:6px;border-radius:2px;width:'+pct+'%;transition:width .5s;"></div>'
             + '</div>'
-            + '<div style="font-size:11px;font-weight:800;color:#374151;width:20px;text-align:right;">'+c.count+'</div>'
+            + '<div style="font-size:11px;font-weight:800;color:var(--ink);width:20px;text-align:right;">'+c.count+'</div>'
             + '</div>';
     }).join('');
 }
@@ -10693,10 +11444,10 @@ function _renderContinents(countries) {
         var name = names[e[0]] || e[0];
         return '<div style="display:flex;align-items:center;gap:6px;">'
             + '<div style="font-size:12px;width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+name+'</div>'
-            + '<div style="flex:1;background:#f3f4f6;border-radius:2px;height:6px;">'
+            + '<div style="flex:1;background:var(--surface-2);border-radius:2px;height:6px;">'
             + '<div style="background:#2563eb;height:6px;border-radius:2px;width:'+pct+'%;transition:width .5s;"></div>'
             + '</div>'
-            + '<div style="font-size:11px;font-weight:800;color:#374151;width:50px;text-align:right;">'+e[1]+' ('+pct+'%)</div>'
+            + '<div style="font-size:11px;font-weight:800;color:var(--ink);width:50px;text-align:right;">'+e[1]+' ('+pct+'%)</div>'
             + '</div>';
     }).join('');
 }
@@ -10717,56 +11468,60 @@ document.addEventListener('DOMContentLoaded', function(){
     # ══════════════════════════════════════════════════════════════════
     SETTINGS_TEMPLATE = r'''{% extends "base.html" %}
 {% block title %}Paramètres - {{ app_name }}{% endblock %}
+{% block head %}
+<style>
+    /* Interrupteur — même rendu que le composant Toggle du produit */
+    .stoggle { position:relative; width:44px; height:24px; flex-shrink:0; border-radius:999px; cursor:pointer; border:none; background:var(--surface-2); transition:background-color .2s; }
+    .stoggle.on { background:var(--accent-2); }
+    .stoggle-knob { position:absolute; top:2px; left:2px; width:20px; height:20px; border-radius:999px; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.25); transition:transform .2s; }
+    .stoggle.on .stoggle-knob { transform:translateX(20px); }
+    input[type=range].s-range { width:100%; accent-color:var(--accent-2); }
+</style>
+{% endblock %}
 {% block content %}
-<div style="max-width:760px;margin:0 auto;">
-    <h1 style="font-size:1.6rem;font-weight:900;margin:0 0 8px;display:flex;align-items:center;gap:12px;">
-        <span style="width:40px;height:40px;background:linear-gradient(135deg,#7c3aed,#a855f7);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:18px;"></span>
-        Paramètres
-    </h1>
-    <p style="color:#6b7280;font-size:14px;margin:0 0 28px;">Personnalisez votre expérience. Les préférences sont sauvegardées sur votre appareil et synchronisées avec votre profil.</p>
+{% from 'icons.html' import icon %}
+{% macro tog(label, hint, tid, onclick, on='false', extra='') -%}
+<label class="flex cursor-pointer items-center justify-between gap-4 py-3.5">
+    <span class="min-w-0">
+        <span class="block text-sm font-medium">{{ label }}</span>
+        <span class="block text-xs text-ink-muted">{{ hint }}</span>
+        {{ extra|safe }}
+    </span>
+    <div class="stoggle {{ 'on' if on == 'true' else '' }}" id="{{ tid }}" onclick="{{ onclick }}" data-on="{{ on }}" role="switch"><div class="stoggle-knob"></div></div>
+</label>
+{%- endmacro %}
+{% macro sel_cls() -%}rounded-lg border border-border bg-surface px-3 py-1.5 text-sm outline-none focus-visible:border-accent-2{%- endmacro %}
+<div class="mx-auto max-w-2xl">
+    <h1 class="mb-1 font-display text-2xl font-semibold">Paramètres</h1>
+    <p class="mb-6 text-sm text-ink-muted">Personnalisez votre expérience. Les préférences sont sauvegardées sur votre appareil et synchronisées avec votre profil.</p>
 
-    <div id="s-feedback" style="display:none;margin-bottom:16px;padding:12px 18px;border-radius:10px;font-size:14px;font-weight:600;"></div>
+    <div id="s-feedback" class="hidden"></div>
 
     <!-- ── THÈME ── -->
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;margin-bottom:16px;" class="s-card">
-        <style>html.dark .s-card{background:#1f2937;border-color:#374151;}</style>
-        <div style="background:linear-gradient(to right,#7c3aed,#a855f7);padding:12px 18px;">
-            <span style="color:#fff;font-weight:800;font-size:13px;">Apparence & Thème</span>
-        </div>
-        <div style="padding:20px;display:flex;flex-direction:column;gap:18px;">
+    <section class="card mb-5 p-5">
+        <h2 class="mb-3 text-sm font-semibold text-ink-muted">Apparence</h2>
+        <div class="flex flex-wrap items-center justify-between gap-3 py-2">
             <div>
-                <div style="font-size:13px;font-weight:700;margin-bottom:10px;">Mode d'affichage</div>
-                <div style="display:flex;gap:10px;flex-wrap:wrap;">
-                    <button onclick="sSetTheme('light')" id="st-light"
-                        style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px 24px;border-radius:12px;border:2px solid #e5e7eb;background:#fff;cursor:pointer;color:inherit;transition:all .15s;min-width:100px;">
-                        <span style="font-size:1.6rem;"></span>
-                        <span style="font-size:13px;font-weight:700;">Clair</span>
-                    </button>
-                    <button onclick="sSetTheme('dark')" id="st-dark"
-                        style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px 24px;border-radius:12px;border:2px solid #e5e7eb;background:#fff;cursor:pointer;color:inherit;transition:all .15s;min-width:100px;">
-                        <span style="font-size:1.6rem;"></span>
-                        <span style="font-size:13px;font-weight:700;">Sombre</span>
-                    </button>
-                    <button onclick="sSetTheme('auto')" id="st-auto"
-                        style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px 24px;border-radius:12px;border:2px solid #e5e7eb;background:#fff;cursor:pointer;color:inherit;transition:all .15s;min-width:100px;">
-                        <span style="font-size:1.6rem;"></span>
-                        <span style="font-size:13px;font-weight:700;">Auto</span>
-                    </button>
-                </div>
-                <p style="font-size:12px;color:#9ca3af;margin:8px 0 0;">Auto = suit les préférences de votre système d'exploitation</p>
+                <span class="text-sm font-medium">Thème</span>
+                <p class="text-xs text-ink-muted">Auto = suit les préférences de votre système d'exploitation</p>
+            </div>
+            <div class="flex items-center rounded-full border border-border bg-surface p-1">
+                {% for k, ic, lbl in [('light','sun','Clair'),('dark','moon','Sombre'),('auto','monitor','Auto')] %}
+                <button type="button" onclick="sSetTheme('{{ k }}')" id="st-{{ k }}" aria-pressed="false"
+                        class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold text-ink-muted transition-colors hover:text-ink">
+                    {{ icon(ic, 14) }} {{ lbl }}
+                </button>
+                {% endfor %}
             </div>
         </div>
-    </div>
+    </section>
 
     <!-- ── LANGUE ── -->
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;margin-bottom:16px;" class="s-card">
-        <div style="background:linear-gradient(to right,#0891b2,#06b6d4);padding:12px 18px;">
-            <span style="color:#fff;font-weight:800;font-size:13px;">Langue & Région</span>
-        </div>
-        <div style="padding:20px;">
-            <label style="font-size:13px;font-weight:700;display:block;margin-bottom:8px;">Langue préférée</label>
-            <select id="s-lang" onchange="sChangeLang(this.value)"
-                style="border:1px solid #d1d5db;border-radius:10px;padding:10px 16px;font-size:14px;outline:none;background:inherit;color:inherit;width:100%;max-width:280px;">
+    <section class="card mb-5 p-5">
+        <h2 class="mb-1 text-sm font-semibold text-ink-muted">Général</h2>
+        <div class="flex items-center justify-between gap-4 py-3.5">
+            <label for="s-lang" class="text-sm font-medium">Langue préférée</label>
+            <select id="s-lang" onchange="sChangeLang(this.value)" class="{{ sel_cls() }}">
                 <option value="fr">Français</option>
                 <option value="en">English</option>
                 <option value="ar">العربية</option>
@@ -10781,155 +11536,140 @@ document.addEventListener('DOMContentLoaded', function(){
                 <option value="ko">한국어</option>
             </select>
         </div>
-    </div>
+        <div class="divide-y divide-border border-t border-border">
+            {{ tog('Rappels de programmes TV', 'Recevez une notification 5 min avant vos programmes favoris', 'tog-notif', 'sToggleNotif()', 'false', '<span id="s-notif-status" class="mt-0.5 block text-xs text-accent-2"></span>') }}
+        </div>
+    </section>
 
     <!-- ── LECTEUR ── -->
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;margin-bottom:16px;" class="s-card">
-        <div style="background:linear-gradient(to right,#dc2626,#f97316);padding:12px 18px;">
-            <span style="color:#fff;font-weight:800;font-size:13px;">Lecteur vidéo</span>
+    <section class="card mb-5 p-5">
+        <h2 class="mb-1 text-sm font-semibold text-ink-muted">Lecture</h2>
+        <div class="flex items-center justify-between gap-4 py-3.5">
+            <label for="s-quality" class="text-sm font-medium">Qualité par défaut</label>
+            <select id="s-quality" class="{{ sel_cls() }}">
+                <option value="auto">Automatique</option>
+                <option value="hd">HD (720p/1080p)</option>
+                <option value="sd">SD (360p/480p)</option>
+            </select>
         </div>
-        <div style="padding:20px;display:flex;flex-direction:column;gap:16px;">
-            <!-- Qualité -->
-            <div>
-                <label style="font-size:13px;font-weight:700;display:block;margin-bottom:8px;">Qualité par défaut</label>
-                <select id="s-quality"
-                    style="border:1px solid #d1d5db;border-radius:10px;padding:10px 16px;font-size:14px;outline:none;background:inherit;color:inherit;width:100%;max-width:220px;">
-                    <option value="auto">Automatique</option>
-                    <option value="hd">HD (720p/1080p)</option>
-                    <option value="sd">SD (360p/480p)</option>
+        <div class="border-t border-border py-3.5">
+            <label for="s-volume" class="mb-2 block text-sm font-medium">Volume par défaut : <span id="s-vol-val" class="tabular-nums">80</span>%</label>
+            <input type="range" id="s-volume" class="s-range" min="0" max="100" value="80" oninput="document.getElementById('s-vol-val').textContent=this.value">
+        </div>
+        <div class="divide-y divide-border border-t border-border">
+            {{ tog('Lecture automatique', "Lire automatiquement dès l'ouverture d'une chaîne", 'tog-autoplay', "sToggle('autoplay')", 'true') }}
+            {{ tog('Préchargement', 'Précharger le flux avant la lecture (économise les coupures)', 'tog-preload', "sToggle('preload')", 'true') }}
+            {{ tog('Économie de données', 'Réduit la qualité pour économiser votre forfait mobile', 'tog-datasaver', "sToggle('datasaver')", 'false') }}
+        </div>
+    </section>
+
+    <!-- ── LECTURE AVANCÉE ── -->
+    <section class="card mb-5 p-5">
+        <h2 class="mb-1 text-sm font-semibold text-ink-muted">Lecture avancée</h2>
+        <div class="py-3.5">
+            <div class="flex items-center justify-between gap-4">
+                <label for="s-player" class="text-sm font-medium">Lecteur de fallback</label>
+                <select id="s-player" class="{{ sel_cls() }}">
+                    <option value="auto">Automatique (recommandé)</option>
+                    <option value="hls">HLS.js</option>
+                    <option value="videojs">Video.js</option>
+                    <option value="native">Natif HTML5</option>
                 </select>
             </div>
+            <p class="mt-1.5 text-xs text-ink-muted">En cas d'échec, l'application essaie automatiquement les autres lecteurs.</p>
+        </div>
+        <div class="border-t border-border py-3.5">
+            <label for="s-timeout" class="mb-2 block text-sm font-medium">Timeout de connexion : <span id="s-timeout-val" class="tabular-nums">10</span> secondes</label>
+            <input type="range" id="s-timeout" class="s-range" min="5" max="30" value="10" oninput="document.getElementById('s-timeout-val').textContent=this.value">
+        </div>
+        <div class="divide-y divide-border border-t border-border">
+            {{ tog('Reconnexion automatique', "Relance automatiquement la lecture en cas d'interruption", 'tog-autoretry', "sToggle('autoretry')", 'true') }}
+            {{ tog('Qualité adaptative (ABR)', 'Ajuste automatiquement la qualité selon votre connexion', 'tog-abr', "sToggle('abr')", 'true') }}
+        </div>
+        <div class="border-t border-border py-3.5">
+            <label for="s-buffer" class="mb-2 block text-sm font-medium">Taille du buffer : <span id="s-buf-val" class="tabular-nums">30</span> secondes</label>
+            <input type="range" id="s-buffer" class="s-range" min="10" max="120" step="10" value="30" oninput="document.getElementById('s-buf-val').textContent=this.value">
+            <p class="mt-1.5 text-xs text-ink-muted">Un buffer plus grand réduit les interruptions mais augmente le délai.</p>
+        </div>
+    </section>
 
-            <!-- Volume -->
-            <div>
-                <label style="font-size:13px;font-weight:700;display:block;margin-bottom:8px;">Volume par défaut : <span id="s-vol-val">80</span>%</label>
-                <input type="range" id="s-volume" min="0" max="100" value="80"
-                    style="width:100%;max-width:320px;accent-color:#dc2626;"
-                    oninput="document.getElementById('s-vol-val').textContent=this.value">
-            </div>
-
-            <!-- Toggles -->
-            <div style="display:flex;flex-direction:column;gap:12px;">
-                <label style="display:flex;align-items:center;justify-content:space-between;gap:16px;cursor:pointer;">
-                    <div>
-                        <div style="font-size:13px;font-weight:700;">Lecture automatique</div>
-                        <div style="font-size:12px;color:#9ca3af;margin-top:2px;">Lire automatiquement dès l'ouverture d'une chaîne</div>
-                    </div>
-                    <div class="stoggle" id="tog-autoplay" onclick="sToggle('autoplay')" data-on="true">
-                        <div class="stoggle-knob"></div>
-                    </div>
-                </label>
-                <label style="display:flex;align-items:center;justify-content:space-between;gap:16px;cursor:pointer;">
-                    <div>
-                        <div style="font-size:13px;font-weight:700;">Préchargement</div>
-                        <div style="font-size:12px;color:#9ca3af;margin-top:2px;">Précharger le flux avant la lecture (économise les coupures)</div>
-                    </div>
-                    <div class="stoggle" id="tog-preload" onclick="sToggle('preload')" data-on="true">
-                        <div class="stoggle-knob"></div>
-                    </div>
-                </label>
-                <label style="display:flex;align-items:center;justify-content:space-between;gap:16px;cursor:pointer;">
-                    <div>
-                        <div style="font-size:13px;font-weight:700;">Mode économie de données</div>
-                        <div style="font-size:12px;color:#9ca3af;margin-top:2px;">Réduit la qualité pour économiser votre forfait mobile</div>
-                    </div>
-                    <div class="stoggle" id="tog-datasaver" onclick="sToggle('datasaver')" data-on="false">
-                        <div class="stoggle-knob"></div>
-                    </div>
-                </label>
+    <!-- ── ACCESSIBILITÉ ── -->
+    <section class="card mb-5 p-5">
+        <h2 class="mb-1 text-sm font-semibold text-ink-muted">Accessibilité</h2>
+        <div class="divide-y divide-border">
+            {{ tog('Animations réduites', 'Désactive les animations et transitions pour les personnes sensibles', 'tog-reducedmotion', 'sToggleReducedMotion()', 'false') }}
+            {{ tog('Contraste élevé', 'Augmente le contraste des textes et interfaces', 'tog-highcontrast', 'sToggleHighContrast()', 'false') }}
+        </div>
+        <div class="flex items-center justify-between gap-4 border-t border-border py-3.5">
+            <span class="text-sm font-medium">Taille du texte</span>
+            <div class="flex gap-2">
+                {% for k, sz in [('small','text-xs'),('medium','text-sm'),('large','text-base'),('xlarge','text-lg')] %}
+                <button type="button" onclick="sFontSize('{{ k }}')" id="fs-{{ k }}" class="flex h-9 w-9 items-center justify-center rounded-lg border border-border font-semibold text-ink-muted transition-colors {{ sz }}">A</button>
+                {% endfor %}
             </div>
         </div>
-    </div>
-
-    <!-- ── NOTIFICATIONS ── -->
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;margin-bottom:16px;" class="s-card">
-        <div style="background:linear-gradient(to right,#16a34a,#22c55e);padding:12px 18px;">
-            <span style="color:#fff;font-weight:800;font-size:13px;">Notifications</span>
-        </div>
-        <div style="padding:20px;display:flex;flex-direction:column;gap:12px;">
-            <label style="display:flex;align-items:center;justify-content:space-between;gap:16px;cursor:pointer;">
-                <div>
-                    <div style="font-size:13px;font-weight:700;">Rappels de programmes TV</div>
-                    <div style="font-size:12px;color:#9ca3af;margin-top:2px;">Recevez une notification 5 min avant vos programmes favoris</div>
-                    <div id="s-notif-status" style="font-size:12px;margin-top:4px;color:#9ca3af;"></div>
-                </div>
-                <div class="stoggle" id="tog-notif" onclick="sToggleNotif()" data-on="false">
-                    <div class="stoggle-knob"></div>
-                </div>
-            </label>
-        </div>
-    </div>
+    </section>
 
     <!-- ── CONFIDENTIALITÉ ── -->
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;margin-bottom:16px;" class="s-card">
-        <div style="background:linear-gradient(to right,#374151,#1f2937);padding:12px 18px;">
-            <span style="color:#fff;font-weight:800;font-size:13px;">Confidentialité & Données</span>
+    <section class="card mb-5 p-5">
+        <h2 class="mb-1 text-sm font-semibold text-ink-muted">Confidentialité &amp; Données</h2>
+        <p class="py-3 text-sm leading-relaxed text-ink-muted">{{ app_name }} ne collecte aucune donnée personnelle identifiable. Aucun compte requis. Vos préférences sont stockées sur votre appareil et sur notre serveur de manière anonyme.</p>
+        <div class="divide-y divide-border border-t border-border">
+            {{ tog('Historique de visionnage local', 'Mémorise les chaînes récemment regardées pour un accès rapide', 'tog-history', "sToggle('history')", 'true') }}
         </div>
-        <div style="padding:20px;display:flex;flex-direction:column;gap:16px;">
-            <div style="background:#fef9c3;border:1px solid #fef08a;border-radius:10px;padding:12px 16px;font-size:13px;color:#92400e;">
-                {{ app_name }} ne collecte aucune donnée personnelle identifiable. Aucun compte requis. Vos préférences sont stockées sur votre appareil et sur notre serveur de manière anonyme.
-            </div>
-            <label style="display:flex;align-items:center;justify-content:space-between;gap:16px;cursor:pointer;">
-                <div>
-                    <div style="font-size:13px;font-weight:700;">Historique de visionnage local</div>
-                    <div style="font-size:12px;color:#9ca3af;margin-top:2px;">Mémorise les chaînes récemment regardées pour un accès rapide</div>
-                </div>
-                <div class="stoggle" id="tog-history" onclick="sToggle('history')" data-on="true">
-                    <div class="stoggle-knob"></div>
-                </div>
-            </label>
-            <div style="border-top:1px solid #e5e7eb;padding-top:14px;">
-                <div style="font-size:13px;font-weight:700;margin-bottom:6px;">Effacer toutes les données locales</div>
-                <div style="font-size:12px;color:#9ca3af;margin-bottom:12px;">Supprime l'historique, les favoris locaux et tous vos paramètres. Action irréversible.</div>
-                <button onclick="sClearData()"
-                    style="background:#fee2e2;border:1px solid #fecaca;color:#dc2626;padding:9px 18px;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;transition:background .15s;"
-                    onmouseover="this.style.background='#fecaca'" onmouseout="this.style.background='#fee2e2'">
-                    Effacer mes données locales
-                </button>
-            </div>
+        <div class="border-t border-border pt-3.5">
+            <p class="text-sm font-medium">Effacer toutes les données locales</p>
+            <p class="mb-3 mt-0.5 text-xs text-ink-muted">Supprime l'historique, les favoris locaux et tous vos paramètres. Action irréversible.</p>
+            <button type="button" onclick="sClearData()" class="rounded-full border border-accent/40 px-4 py-2 text-sm font-medium text-accent transition-colors hover:bg-accent/10">Effacer mes données locales</button>
         </div>
-    </div>
+    </section>
 
     <!-- ── BOUTONS ── -->
-    <div style="display:flex;gap:12px;flex-wrap:wrap;">
-        <button onclick="sSave()" id="s-save-btn"
-            style="flex:1;background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:none;padding:14px 24px;border-radius:12px;font-size:15px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:opacity .2s;min-width:180px;">
+    <div class="flex flex-wrap gap-3">
+        <button type="button" onclick="sSave()" id="s-save-btn" class="flex items-center gap-2 rounded-xl bg-accent-2 px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60">
             <i class="fas fa-save"></i> Enregistrer les paramètres
         </button>
-        <button onclick="sReset()"
-            style="background:#f3f4f6;border:1px solid #e5e7eb;color:inherit;padding:14px 24px;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:all .15s;"
-            onmouseover="this.style.background='#e5e7eb'" onmouseout="this.style.background='#f3f4f6'">
+        <button type="button" onclick="sReset()" class="flex items-center gap-2 rounded-xl border border-border px-5 py-2.5 text-sm font-medium text-ink-muted transition-colors hover:text-ink">
             <i class="fas fa-undo"></i> Réinitialiser
         </button>
     </div>
+
+    <!-- ── EXPORT ── -->
+    <section class="card my-5 p-5">
+        <h2 class="mb-1 text-sm font-semibold text-ink-muted">Exporter le catalogue</h2>
+        <p class="mb-3 text-sm text-ink-muted">Téléchargez la liste des chaînes au format M3U pour la lire dans VLC, une box IPTV ou toute autre application compatible.</p>
+        <a href="/api/playlist/m3u?type=all" download="livewatch.m3u" class="flex w-fit items-center gap-1.5 rounded-full border border-border px-4 py-2 text-sm font-medium text-ink-muted hover:text-ink">{{ icon('download', 15) }} Télécharger la playlist M3U</a>
+    </section>
+
+    <!-- ── INFORMATIONS ── -->
+    <section class="card mb-5 border-accent-2/30 bg-accent-2-soft p-5">
+        <h3 class="mb-2 flex items-center gap-2 text-sm font-semibold text-accent-2">{{ icon('info', 16) }} À propos de vos paramètres</h3>
+        <div class="space-y-1 text-xs leading-relaxed text-ink-muted">
+            <p>• Les préférences sont stockées localement dans votre navigateur et synchronisées avec notre serveur.</p>
+            <p>• Le thème, la langue et la qualité vidéo sont appliqués immédiatement.</p>
+            <p>• La déconnexion ou la suppression des cookies ne réinitialise pas les paramètres serveur.</p>
+            <p>• Pour un support multi-appareils, connectez-vous avec le même identifiant.</p>
+        </div>
+    </section>
+
+    <div class="flex flex-wrap gap-x-4 gap-y-1 py-2 text-xs text-ink-muted">
+        <a href="/about" class="inline-flex items-center gap-1 hover:text-ink">{{ icon('file-text', 12) }} À propos</a>
+        <a href="/terms" class="hover:text-ink">Conditions d'utilisation</a>
+        <a href="/privacy" class="hover:text-ink">Confidentialité</a>
+    </div>
 </div>
+{% endblock %}
 
-<style>
-/* ── Toggle switch CSS ── */
-.stoggle {
-    position:relative; width:48px; height:26px; background:#d1d5db;
-    border-radius:13px; cursor:pointer; flex-shrink:0;
-    transition:background .25s; border:none;
-}
-.stoggle.on { background:#16a34a; }
-.stoggle-knob {
-    position:absolute; top:3px; left:3px; width:20px; height:20px;
-    background:#fff; border-radius:50%; transition:transform .25s;
-    box-shadow:0 1px 4px rgba(0,0,0,.2);
-}
-.stoggle.on .stoggle-knob { transform:translateX(22px); }
-html.dark .stoggle { background:#4b5563; }
-html.dark .stoggle.on { background:#16a34a; }
-</style>
-
+{% block scripts %}
 <script>
+
 // ═══════════════════════════════════════════════════════════
 //  SETTINGS — Logique complète
 // ═══════════════════════════════════════════════════════════
 var S_KEY = 'lw_settings_v3';
 
 var S_DEF = {
-    theme: 'auto', lang: 'fr', quality: 'auto', volume: 80,
+    theme: 'dark', lang: 'fr', quality: 'auto', volume: 80,
     autoplay: true, preload: true, datasaver: false,
     notif: false, history: true
 };
@@ -10946,7 +11686,7 @@ function sPut(s) {
 // ── Peupler le formulaire ─────────────────────────────────
 function sPopulate(s) {
     // Thème
-    _sHighlightTheme(s.theme || 'auto');
+    _sHighlightTheme(_lwThemeMode() === 'system' ? 'auto' : _lwThemeMode());
     // Langue
     var sl = document.getElementById('s-lang');
     if (sl) sl.value = s.lang || 'fr';
@@ -10979,15 +11719,11 @@ function _sHighlightTheme(t) {
     ['light','dark','auto'].forEach(function(k){
         var btn = document.getElementById('st-' + k);
         if (!btn) return;
-        if (k === t) {
-            btn.style.borderColor = '#7c3aed';
-            btn.style.background = '#f5f3ff';
-            btn.style.color = '#7c3aed';
-        } else {
-            btn.style.borderColor = '#e5e7eb';
-            btn.style.background = '';
-            btn.style.color = 'inherit';
-        }
+        var on = (k === t);
+        btn.classList.toggle('bg-accent-2', on);
+        btn.classList.toggle('text-white', on);
+        btn.classList.toggle('text-ink-muted', !on);
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
     });
 }
 
@@ -11005,7 +11741,7 @@ function sSetTheme(t) {
         var prefersDark = window.matchMedia('(prefers-color-scheme:dark)').matches;
         if (prefersDark) document.documentElement.classList.add('dark');
         else document.documentElement.classList.remove('dark');
-        localStorage.removeItem('lw_theme');
+        localStorage.setItem('lw_theme', 'system');
     }
     // Icône thème dans nav
     var icon = document.getElementById('theme-icon');
@@ -11080,16 +11816,11 @@ function _sFb(msg, ok) {
     var el = document.getElementById('s-feedback');
     if (!el) return;
     el.textContent = msg;
-    el.style.background = ok ? '#dcfce7' : '#fee2e2';
-    el.style.color = ok ? '#16a34a' : '#dc2626';
-    el.style.border = '1px solid ' + (ok ? '#bbf7d0' : '#fecaca');
-    el.style.borderRadius = '10px';
-    el.style.padding = '12px 18px';
-    el.style.fontWeight = '600';
-    el.style.fontSize = '14px';
-    el.style.display = 'block';
+    el.className = 'mb-5 rounded-xl border px-4 py-3 text-sm font-semibold ' + (ok
+        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+        : 'border-accent/30 bg-accent/10 text-accent');
     clearTimeout(window._sfbTimer);
-    window._sfbTimer = setTimeout(function(){ el.style.display = 'none'; }, 4000);
+    window._sfbTimer = setTimeout(function(){ el.className = 'hidden'; }, 4000);
 }
 
 // ── Enregistrer ───────────────────────────────────────────
@@ -11140,7 +11871,7 @@ async function sReset() {
     if (!confirm('Réinitialiser tous les paramètres aux valeurs d\'origine ?\nCette action est irréversible.')) return;
     sPut(Object.assign({}, S_DEF));
     sPopulate(S_DEF);
-    sSetTheme('auto');
+    sSetTheme(S_DEF.theme);
     _sFb('Paramètres réinitialisés aux valeurs d\'origine.', true);
     try { await fetch('/api/settings/reset', { method:'POST', credentials:'include' }); } catch(e) {}
 }
@@ -11175,119 +11906,10 @@ document.addEventListener('DOMContentLoaded', function(){
         })
         .catch(function(){});
 });
+
 </script>
-
-
-<!-- ── SECTION AVANCÉE ── -->
-<div style="background:#fff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;margin-bottom:16px;" class="s-card">
-    <div style="background:linear-gradient(to right,#dc2626,#b91c1c);padding:12px 18px;">
-        <span style="color:#fff;font-weight:800;font-size:13px;">Lecture avancée</span>
-    </div>
-    <div style="padding:20px;display:flex;flex-direction:column;gap:16px;">
-        <!-- Fallback lecteur -->
-        <div>
-            <label style="font-size:13px;font-weight:700;display:block;margin-bottom:6px;">Lecteur de fallback</label>
-            <select id="s-player"
-                style="border:1px solid #d1d5db;border-radius:10px;padding:10px 16px;font-size:14px;outline:none;background:inherit;color:inherit;width:100%;max-width:260px;">
-                <option value="auto">Automatique (recommandé)</option>
-                <option value="hls">HLS.js</option>
-                <option value="videojs">Video.js</option>
-                <option value="native">Natif HTML5</option>
-            </select>
-            <p style="font-size:12px;color:#9ca3af;margin:6px 0 0;">En cas d'échec, l'application essaie automatiquement les autres lecteurs.</p>
-        </div>
-
-        <!-- Timeout connexion -->
-        <div>
-            <label style="font-size:13px;font-weight:700;display:block;margin-bottom:6px;">Timeout de connexion : <span id="s-timeout-val">10</span> secondes</label>
-            <input type="range" id="s-timeout" min="5" max="30" value="10"
-                style="width:100%;max-width:280px;accent-color:#dc2626;"
-                oninput="document.getElementById('s-timeout-val').textContent=this.value">
-        </div>
-
-        <!-- Retry automatique -->
-        <label style="display:flex;align-items:center;justify-content:space-between;gap:16px;cursor:pointer;">
-            <div>
-                <div style="font-size:13px;font-weight:700;">Reconnexion automatique</div>
-                <div style="font-size:12px;color:#9ca3af;margin-top:2px;">Relance automatiquement la lecture en cas d'interruption</div>
-            </div>
-            <div class="stoggle on" id="tog-autoretry" onclick="sToggle('autoretry')" data-on="true">
-                <div class="stoggle-knob"></div>
-            </div>
-        </label>
-
-        <!-- Qualité adaptative -->
-        <label style="display:flex;align-items:center;justify-content:space-between;gap:16px;cursor:pointer;">
-            <div>
-                <div style="font-size:13px;font-weight:700;">Qualité adaptative (ABR)</div>
-                <div style="font-size:12px;color:#9ca3af;margin-top:2px;">Ajuste automatiquement la qualité selon votre connexion</div>
-            </div>
-            <div class="stoggle on" id="tog-abr" onclick="sToggle('abr')" data-on="true">
-                <div class="stoggle-knob"></div>
-            </div>
-        </label>
-
-        <!-- Buffer minimal -->
-        <div>
-            <label style="font-size:13px;font-weight:700;display:block;margin-bottom:6px;">Taille du buffer : <span id="s-buf-val">30</span> secondes</label>
-            <input type="range" id="s-buffer" min="10" max="120" step="10" value="30"
-                style="width:100%;max-width:280px;accent-color:#dc2626;"
-                oninput="document.getElementById('s-buf-val').textContent=this.value">
-            <p style="font-size:12px;color:#9ca3af;margin:4px 0 0;">Un buffer plus grand réduit les interruptions mais augmente le délai.</p>
-        </div>
-    </div>
-</div>
-
-<!-- ── SECTION ACCESSIBILITÉ ── -->
-<div style="background:#fff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;margin-bottom:16px;" class="s-card">
-    <div style="background:linear-gradient(to right,#0891b2,#0e7490);padding:12px 18px;">
-        <span style="color:#fff;font-weight:800;font-size:13px;">Accessibilité</span>
-    </div>
-    <div style="padding:20px;display:flex;flex-direction:column;gap:12px;">
-        <label style="display:flex;align-items:center;justify-content:space-between;gap:16px;cursor:pointer;">
-            <div>
-                <div style="font-size:13px;font-weight:700;">Animations réduites</div>
-                <div style="font-size:12px;color:#9ca3af;margin-top:2px;">Désactive les animations et transitions pour les personnes sensibles</div>
-            </div>
-            <div class="stoggle" id="tog-reducedmotion" onclick="sToggleReducedMotion()" data-on="false">
-                <div class="stoggle-knob"></div>
-            </div>
-        </label>
-        <label style="display:flex;align-items:center;justify-content:space-between;gap:16px;cursor:pointer;">
-            <div>
-                <div style="font-size:13px;font-weight:700;">Contraste élevé</div>
-                <div style="font-size:12px;color:#9ca3af;margin-top:2px;">Augmente le contraste des textes et interfaces</div>
-            </div>
-            <div class="stoggle" id="tog-highcontrast" onclick="sToggleHighContrast()" data-on="false">
-                <div class="stoggle-knob"></div>
-            </div>
-        </label>
-        <div>
-            <label style="font-size:13px;font-weight:700;display:block;margin-bottom:6px;">Taille du texte</label>
-            <div style="display:flex;gap:8px;">
-                <button onclick="sFontSize('small')" id="fs-small" style="padding:8px 16px;border-radius:8px;border:2px solid #e5e7eb;background:transparent;cursor:pointer;font-size:12px;font-weight:700;color:inherit;">A</button>
-                <button onclick="sFontSize('medium')" id="fs-medium" style="padding:8px 16px;border-radius:8px;border:2px solid #dc2626;background:#fee2e2;cursor:pointer;font-size:14px;font-weight:700;color:#dc2626;">A</button>
-                <button onclick="sFontSize('large')" id="fs-large" style="padding:8px 16px;border-radius:8px;border:2px solid #e5e7eb;background:transparent;cursor:pointer;font-size:16px;font-weight:700;color:inherit;">A</button>
-                <button onclick="sFontSize('xlarge')" id="fs-xlarge" style="padding:8px 16px;border-radius:8px;border:2px solid #e5e7eb;background:transparent;cursor:pointer;font-size:18px;font-weight:700;color:inherit;">A</button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- ── INFORMATIONS ── -->
-<div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:16px;padding:16px 20px;margin-bottom:16px;">
-    <h3 style="font-size:13px;font-weight:800;color:#0369a1;margin:0 0 10px;display:flex;align-items:center;gap:6px;">
-        <i class="fas fa-info-circle"></i> À propos de vos paramètres
-    </h3>
-    <div style="font-size:12px;color:#0c4a6e;line-height:1.7;">
-        <p style="margin:0 0 6px;">• Les préférences sont stockées localement dans votre navigateur et synchronisées avec notre serveur.</p>
-        <p style="margin:0 0 6px;">• Le thème, la langue et la qualité vidéo sont appliqués immédiatement.</p>
-        <p style="margin:0 0 6px;">• La déconnexion ou la suppression des cookies ne réinitialise pas les paramètres serveur.</p>
-        <p style="margin:0;">• Pour un support multi-appareils, connectez-vous avec le même identifiant.</p>
-    </div>
-</div>
-
 <script>
+
 // ── Extensions settings ──────────────────────────────────────────────
 function sToggleReducedMotion(){
     var el=document.getElementById('tog-reducedmotion');
@@ -11328,8 +11950,12 @@ function sFontSize(size){
     ['small','medium','large','xlarge'].forEach(function(k){
         var b=document.getElementById('fs-'+k);
         if(!b) return;
-        if(k===size){b.style.borderColor='#dc2626';b.style.background='#fee2e2';b.style.color='#dc2626';}
-        else{b.style.borderColor='#e5e7eb';b.style.background='transparent';b.style.color='inherit';}
+        var on = (k===size);
+        b.classList.toggle('border-accent-2', on);
+        b.classList.toggle('bg-accent-2-soft', on);
+        b.classList.toggle('text-accent-2', on);
+        b.classList.toggle('border-border', !on);
+        b.classList.toggle('text-ink-muted', !on);
     });
     var s=sGet(); s.fontSize=size; sPut(s);
 }
@@ -11359,56 +11985,54 @@ document.addEventListener('DOMContentLoaded',function(){
     if(s.reducedMotion) sToggleReducedMotion();
     if(s.highContrast) sToggleHighContrast();
 });
-</script>
 
-{% endblock %}'''
+</script>
+{% endblock %}
+'''
     # ══════════════════════════════════════════════════════════════════
     # WATCH EXTERNAL TEMPLATE — Lecteur flux externes
     # ══════════════════════════════════════════════════════════════════
     WATCH_EXTERNAL_TEMPLATE = r'''{% extends "base.html" %}
 {% block title %}{{ stream.title }} - {{ app_name }}{% endblock %}
 {% block content %}
-<div style="display:grid;grid-template-columns:1fr 360px;gap:20px;align-items:start;" id="we-layout">
-<style>
-@media(max-width:900px){[id="we-layout"]{grid-template-columns:1fr!important;}}
-</style>
+{% from 'icons.html' import icon %}
+{% from 'components.html' import stream_card, cat_meta %}
+{% set cm = cat_meta.get(stream.category, cat_meta['iptv']) %}
+<div id="we-layout" class="mx-auto grid max-w-5xl gap-8 lg:grid-cols-[1fr_320px]">
 
 <!-- ── COLONNE GAUCHE : LECTEUR ── -->
-<div>
-    <!-- Breadcrumb -->
-    <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#9ca3af;margin-bottom:12px;">
-        <a href="/" style="color:inherit;text-decoration:none;">Accueil</a>
+<div class="min-w-0">
+    <!-- Fil d'Ariane -->
+    <nav class="mb-3 flex flex-wrap items-center gap-1.5 text-xs text-ink-muted">
+        <a href="/" class="hover:text-ink">Accueil</a>
         <span>›</span>
         <span>{{ stream.category }}</span>
         <span>›</span>
-        <span style="color:#374151;font-weight:600;">{{ stream.title }}</span>
-    </div>
+        <span class="truncate text-ink">{{ stream.title }}</span>
+    </nav>
 
-    <!-- Player -->
-    <div style="background:#000;border-radius:16px;overflow:hidden;position:relative;aspect-ratio:16/9;margin-bottom:16px;">
+    <!-- Lecteur -->
+    <div class="relative w-full overflow-hidden rounded-2xl bg-black" style="aspect-ratio:16/9">
 
         <!-- Lecteur HLS/MP4 -->
         {% if stream.stream_type in ['hls','mp4','dash'] %}
-        <video id="we-video" controls autoplay playsinline
-            style="width:100%;height:100%;background:#000;"
+        <video id="we-video" controls autoplay playsinline class="absolute inset-0 h-full w-full bg-black"
             {% if stream.url %}src="{{ stream.url }}"{% endif %}>
-            <p style="color:#fff;padding:20px;font-size:13px;">Votre navigateur ne supporte pas la lecture vidéo.</p>
+            <p>Votre navigateur ne supporte pas la lecture vidéo.</p>
         </video>
         {% endif %}
 
         <!-- Lecteur Audio -->
         {% if stream.stream_type == 'audio' %}
-        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;background:linear-gradient(135deg,#1e3a5f,#1e293b);padding:24px;">
+        <div class="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-gradient-to-br from-[#0A0E1A] to-[#1B2233] px-6 text-center text-white">
             {% if stream.logo %}
-            <img src="{{ stream.logo }}" style="width:110px;height:110px;border-radius:16px;object-fit:contain;margin-bottom:20px;box-shadow:0 8px 32px rgba(0,0,0,.5);" onerror="this.style.display='none'">
+            <img src="{{ stream.logo }}" alt="" class="mb-4 h-28 w-28 rounded-2xl object-contain shadow-2xl" onerror="this.style.display='none'">
             {% else %}
-            <div style="width:110px;height:110px;border-radius:50%;background:linear-gradient(135deg,#dc2626,#f97316);display:flex;align-items:center;justify-content:center;margin-bottom:20px;animation:audioPulse 2s infinite;">
-                <i class="fas fa-radio" style="font-size:2.5rem;color:#fff;"></i>
-            </div>
+            <div class="mb-4 flex h-28 w-28 items-center justify-center rounded-2xl bg-accent/20 text-accent">{{ icon('radio', 48) }}</div>
             {% endif %}
-            <div style="color:#fff;font-size:1.1rem;font-weight:800;margin-bottom:4px;text-align:center;">{{ stream.title }}</div>
-            <div style="color:#94a3b8;font-size:13px;margin-bottom:20px;">Radio en direct</div>
-            <audio id="we-audio" controls autoplay style="width:100%;max-width:360px;">
+            <div class="font-display text-xl font-semibold">{{ stream.title }}</div>
+            <div class="mb-4 text-sm text-white/60">Radio en direct</div>
+            <audio id="we-audio" controls autoplay class="w-full max-w-sm">
                 <source src="{{ stream.url }}" type="audio/mpeg">
                 <source src="{{ stream.url }}">
             </audio>
@@ -11417,116 +12041,128 @@ document.addEventListener('DOMContentLoaded',function(){
 
         <!-- Lecteur YouTube embed -->
         {% if stream.stream_type == 'youtube' %}
-        <div id="we-yt-wrap" style="width:100%;height:100%;position:absolute;inset:0;">
-            <div id="we-yt-loading" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0f0f0f;color:#fff;gap:12px;">
-                <i class="fas fa-spinner fa-spin" style="font-size:2rem;color:#dc2626;"></i>
-                <p style="font-size:13px;margin:0;">Chargement YouTube...</p>
+        <div id="we-yt-wrap" class="absolute inset-0">
+            <div id="we-yt-loading" class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/70">
+                <i class="fas fa-spinner fa-spin" style="font-size:1.6rem"></i>
+                <p class="text-sm">Chargement YouTube...</p>
             </div>
-            <iframe id="we-yt-frame" src="" frameborder="0" style="position:absolute;inset:0;width:100%;height:100%;display:none;"
+            <iframe id="we-yt-frame" src="" frameborder="0" class="absolute inset-0 h-full w-full border-0" style="display:none"
                 allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>
         </div>
         {% endif %}
 
         <!-- Badge LIVE -->
-        <div style="position:absolute;top:12px;left:12px;background:#dc2626;color:#fff;font-size:11px;font-weight:800;padding:4px 10px;border-radius:99px;" class="live-badge">
-            {% if stream.stream_type == 'audio' %}{% elif stream.stream_type == 'youtube' %}{% else %}{% endif %} LIVE
+        <div class="pointer-events-none absolute left-3 top-3">
+            <span class="inline-flex items-center gap-1.5 rounded-full bg-accent px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white"><span class="live-dot bg-white"></span>DIRECT</span>
         </div>
 
         <!-- Contrôles overlay -->
-        <div style="position:absolute;top:12px;right:12px;display:flex;gap:8px;">
-            <button onclick="weToggleFav()" id="we-fav-btn" title="Ajouter aux favoris"
-                style="width:34px;height:34px;background:rgba(0,0,0,.6);border:none;border-radius:50%;color:#f59e0b;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;"></button>
-            <button onclick="weFullscreen()" title="Plein écran"
-                style="width:34px;height:34px;background:rgba(0,0,0,.6);border:none;border-radius:50%;color:#fff;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;">⛶</button>
+        <div class="absolute right-3 top-3 z-10 flex gap-2">
+            <button type="button" onclick="weToggleFav()" id="we-fav-btn" title="Ajouter aux favoris" aria-label="Ajouter aux favoris"
+                    class="flex h-9 w-9 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur-sm transition-colors hover:bg-black/75">{{ icon('star', 16) }}</button>
+            <button type="button" onclick="weFullscreen()" title="Plein écran" aria-label="Plein écran"
+                    class="flex h-9 w-9 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur-sm transition-colors hover:bg-black/75">{{ icon('maximize', 16) }}</button>
         </div>
     </div>
 
     <!-- Infos stream -->
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
-        <div style="flex:1;min-width:0;">
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
+    <div class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div class="min-w-0">
+            <div class="mb-1.5 flex flex-wrap items-center gap-2">
+                <span class="inline-flex items-center gap-1.5 rounded-full bg-accent px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white"><span class="live-dot bg-white"></span>DIRECT</span>
+                <span class="rounded-full px-2 py-0.5 text-xs font-medium {{ cm[1] }} {{ cm[2] }}">{{ cm[3] if stream.category in cat_meta else stream.category }}</span>
+                {% if stream.quality %}<span class="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium text-ink-muted">{{ stream.quality }}</span>{% endif %}
+                {% if stream.is_active %}<span class="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">En ligne</span>
+                {% else %}<span class="rounded-full bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent">Hors ligne</span>{% endif %}
+            </div>
+            <div class="flex items-center gap-3">
                 {% if stream.logo %}
-                <img src="{{ stream.logo }}" style="width:36px;height:36px;border-radius:8px;object-fit:contain;background:#f3f4f6;padding:3px;" onerror="this.style.display='none'">
+                <img src="{{ stream.logo }}" alt="" class="h-9 w-9 shrink-0 rounded-lg bg-surface-2 object-contain p-1" onerror="this.style.display='none'">
                 {% endif %}
-                <h1 style="font-size:1.3rem;font-weight:900;margin:0;">{{ stream.title }}</h1>
+                <h1 class="font-display text-xl font-semibold sm:text-2xl">{{ stream.title }}</h1>
             </div>
-            <div style="display:flex;flex-wrap:wrap;gap:8px;font-size:12px;color:#6b7280;">
-                {% if stream.country %}<span>{% if stream.country %}<img src="https://flagcdn.com/w20/{{ stream.country|lower }}.png" style="width:16px;height:11px;object-fit:cover;border-radius:2px;vertical-align:middle;margin-right:4px;" onerror="this.style.display='none'">{% endif %}{{ stream.country }}</span>{% endif %}
-                <span>{{ stream.category }}</span>
-                {% if stream.quality %}<span>{{ stream.quality }}</span>{% endif %}
-                {% if stream.is_active %}<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:99px;font-weight:700;">En ligne</span>
-                {% else %}<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:99px;font-weight:700;">Hors ligne</span>{% endif %}
-            </div>
+            {% if stream.country %}
+            <p class="mt-1 flex items-center gap-1.5 text-sm text-ink-muted">
+                <img src="https://flagcdn.com/w20/{{ stream.country|lower }}.png" alt="" class="h-3 rounded-sm object-cover" onerror="this.style.display='none'">{{ stream.country }}
+            </p>
+            {% endif %}
         </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;flex-shrink:0;">
-            <button onclick="weRecord()" id="we-rec-btn"
-                style="display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:10px;background:#fee2e2;color:#dc2626;border:none;cursor:pointer;font-size:13px;font-weight:700;transition:background .15s;">
-                <i class="fas fa-circle" style="font-size:10px;"></i> <span id="we-rec-label">Enregistrer</span>
+        <div class="flex shrink-0 items-center gap-2">
+            <button type="button" onclick="weRecord()" id="we-rec-btn"
+                    class="flex items-center gap-1.5 rounded-full border border-accent/40 px-4 py-2 text-sm font-medium text-accent transition-colors hover:bg-accent/10">
+                <i class="fas fa-circle" style="font-size:.6em"></i> <span id="we-rec-label">Enregistrer</span>
             </button>
-            <button onclick="weReport()"
-                style="display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:10px;background:#f3f4f6;border:none;cursor:pointer;font-size:13px;font-weight:600;color:inherit;">
-                Signaler
+            <button type="button" onclick="weReport()"
+                    class="flex items-center gap-1.5 rounded-full border border-border px-4 py-2 text-sm font-medium text-ink-muted hover:text-ink">
+                {{ icon('flag', 15) }} Signaler
             </button>
         </div>
     </div>
 
     <!-- Erreur lecteur + bouton retry -->
-    <div id="we-err" style="display:none;background:#fee2e2;border:1px solid #fecaca;color:#dc2626;padding:14px 18px;border-radius:12px;font-size:13px;margin-bottom:14px;">
-        <strong>Problème de lecture</strong><br>
-        <span id="we-err-msg">Le flux ne répond pas.</span><br>
-        <button onclick="weRetry()" style="margin-top:8px;background:#dc2626;color:#fff;border:none;padding:7px 16px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;">Réessayer</button>
-        <a href="/" style="margin-left:8px;color:#6b7280;font-size:12px;">← Retour accueil</a>
+    <div id="we-err" class="mt-4 hidden rounded-xl border border-accent/30 bg-accent/10 px-4 py-3 text-sm text-accent">
+        <strong class="font-semibold">Problème de lecture</strong><br>
+        <span id="we-err-msg">Le flux ne répond pas.</span>
+        <div class="mt-3 flex flex-wrap items-center gap-3">
+            <button type="button" onclick="weRetry()" class="rounded-full bg-accent px-4 py-1.5 text-xs font-semibold text-white hover:opacity-90">Réessayer</button>
+            <a href="/" class="text-xs font-medium underline underline-offset-2">← Retour accueil</a>
+        </div>
     </div>
 
     <!-- Description -->
     {% if stream.description %}
-    <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:14px 18px;font-size:13px;line-height:1.6;color:#374151;margin-bottom:14px;">
-        {{ stream.description }}
-    </div>
+    <div class="card mt-4 p-4 text-sm leading-relaxed text-ink-muted">{{ stream.description }}</div>
     {% endif %}
 
     <!-- Tags -->
     {% if stream.tags %}
-    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px;">
+    <div class="mt-3 flex flex-wrap gap-2">
         {% for tag in stream.tags.split(',') if tag.strip() %}
-        <a href="/search?q={{ tag.strip() }}" style="background:#f3f4f6;color:#374151;padding:4px 12px;border-radius:99px;font-size:12px;text-decoration:none;transition:background .15s;"
-           onmouseover="this.style.background='#e5e7eb'" onmouseout="this.style.background='#f3f4f6'">#{{ tag.strip() }}</a>
+        <a href="/search?q={{ tag.strip() }}" class="rounded-full border border-border px-3 py-1 text-xs font-medium text-ink-muted transition-colors hover:text-ink">#{{ tag.strip() }}</a>
         {% endfor %}
     </div>
     {% endif %}
+
+    <!-- Commentaires -->
+    <div id="we-comments-section" class="mt-8">
+        <div class="mb-4 flex items-center justify-between"><h2 class="font-display text-lg font-semibold">Commentaires</h2></div>
+        <div class="mb-4 flex flex-wrap items-center gap-2">
+            <input type="text" id="we-cmt-name" placeholder="Votre pseudo" maxlength="50"
+                   class="w-36 shrink-0 rounded-full border border-border bg-surface px-4 py-2.5 text-sm outline-none placeholder:text-ink-muted focus-visible:border-accent-2">
+            <input type="text" id="we-cmt-text" placeholder="Ajouter un commentaire…" maxlength="500" onkeydown="if(event.key==='Enter')wePostComment()"
+                   class="min-w-0 flex-1 rounded-full border border-border bg-surface px-4 py-2.5 text-sm outline-none placeholder:text-ink-muted focus-visible:border-accent-2">
+            <button type="button" onclick="wePostComment()" aria-label="Envoyer" class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-accent-2 text-white">{{ icon('send', 15) }}</button>
+        </div>
+        <div id="we-comments-list" class="space-y-3">
+            <p class="card p-6 text-center text-sm text-ink-muted">Chargement des commentaires...</p>
+        </div>
+        <div id="we-more-btn-wrap" class="mt-3 text-center" style="display:none">
+            <button type="button" onclick="weLoadComments(true)" class="rounded-full border border-border px-5 py-2 text-sm font-medium text-ink-muted hover:text-ink">Voir plus de commentaires</button>
+        </div>
+    </div>
 </div>
 
 <!-- ── COLONNE DROITE : SIDEBAR ── -->
-<div style="display:flex;flex-direction:column;gap:16px;">
-    <style>html.dark .we-card{background:#1f2937!important;border-color:#374151!important;}</style>
-    <!-- Chaînes similaires -->
+<div>
     {% if similar_streams %}
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;" class="we-card">
-        <div style="padding:12px 16px;border-bottom:1px solid #e5e7eb;"><strong style="font-size:13px;">Chaînes similaires</strong></div>
-        <div style="padding:8px;display:flex;flex-direction:column;gap:4px;">
-            {% for s in similar_streams[:8] %}
-            <a href="/watch/external/{{ s.id }}"
-               style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-radius:10px;text-decoration:none;color:inherit;transition:background .15s;"
-               onmouseover="this.style.background='rgba(220,38,38,.05)'" onmouseout="this.style.background=''">
-                <div style="width:36px;height:36px;border-radius:8px;background:#f3f4f6;flex-shrink:0;display:flex;align-items:center;justify-content:center;overflow:hidden;">
-                    {% if s.logo %}<img src="{{ s.logo }}" style="width:100%;height:100%;object-fit:contain;padding:3px;" onerror="this.style.display='none'">
-                    {% else %}<i class="fas fa-tv" style="color:#d1d5db;font-size:14px;"></i>{% endif %}
-                </div>
-                <div style="flex:1;min-width:0;">
-                    <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ s.title }}</div>
-                    <div style="font-size:11px;color:#9ca3af;">{{ s.country or s.category }}</div>
-                </div>
-                <div style="width:8px;height:8px;border-radius:50%;background:#22c55e;flex-shrink:0;" class="live-badge"></div>
-            </a>
-            {% endfor %}
-        </div>
+    <div class="mb-4 flex items-center justify-between"><h2 class="font-display text-lg font-semibold">Chaînes similaires</h2></div>
+    <div class="grid gap-3">
+        {% for s in similar_streams[:8] %}
+        {{ stream_card('/watch/external/' ~ s.id, s.title, s.logo, (s.category if s.category in cat_meta else 'iptv'), (cat_meta.get(s.category, cat_meta['iptv'])[3] ~ ((' · ' ~ s.country) if s.country else ''))) }}
+        {% endfor %}
     </div>
+    {% else %}
+    <div class="mb-4 flex items-center justify-between"><h2 class="font-display text-lg font-semibold">Chaînes similaires</h2></div>
+    <p class="text-sm text-ink-muted">Aucune chaîne similaire pour l'instant.</p>
     {% endif %}
 </div>
 
 </div><!-- end grid -->
+{% endblock %}
 
+{% block scripts %}
 <script>
+
 (function(){
     // ═══════════════════════════════════════════════════════════
     // LECTEUR UNIVERSEL LIVEWATCH — Chaîne de fallback 6 niveaux
@@ -11895,7 +12531,7 @@ document.addEventListener('DOMContentLoaded',function(){
             _recMR.start(1000);
             _recActive = true;
             if (lbl) lbl.textContent = 'Arrêter';
-            if (btn) { btn.style.background='#dc2626'; btn.style.color='#fff'; }
+            if (btn) { btn.classList.add('rec-on'); }
             showNotification('Enregistrement démarré', 'info');
             fetch('/api/recording/start', { method:'POST', credentials:'include' }).catch(function(){});
         } else {
@@ -11903,7 +12539,7 @@ document.addEventListener('DOMContentLoaded',function(){
             if (_recMR && _recMR.state !== 'inactive') _recMR.stop();
             _recActive = false;
             if (lbl) lbl.textContent = 'Enregistrer';
-            if (btn) { btn.style.background='#fee2e2'; btn.style.color='#dc2626'; }
+            if (btn) { btn.classList.remove('rec-on'); }
         }
     };
 
@@ -11966,14 +12602,14 @@ document.addEventListener('DOMContentLoaded',function(){
             };
             _recMR.start(1000); _recActive = true;
             if (lbl) lbl.textContent = 'Arrêter';
-            if (btn) { btn.style.background='#dc2626'; btn.style.color='#fff'; }
+            if (btn) { btn.classList.add('rec-on'); }
             showNotification('Enregistrement démarré', 'info');
             fetch('/api/recording/start', { method:'POST', credentials:'include' }).catch(function(){});
         } else {
             if (_recMR && _recMR.state !== 'inactive') _recMR.stop();
             _recActive = false;
             if (lbl) lbl.textContent = 'Enregistrer';
-            if (btn) { btn.style.background='#fee2e2'; btn.style.color='#dc2626'; }
+            if (btn) { btn.classList.remove('rec-on'); }
         }
     };
 
@@ -11986,41 +12622,10 @@ document.addEventListener('DOMContentLoaded',function(){
         weInit();
     }
 })();
+
 </script>
-
-
-<!-- ── SECTION COMMENTAIRES ── -->
-<div style="max-width:960px;margin-top:20px;" id="we-comments-section">
-    <h2 style="font-size:1rem;font-weight:800;margin:0 0 14px;display:flex;align-items:center;gap:8px;">
-        <span style="width:24px;height:24px;background:#f3f4f6;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:11px;"></span>
-        Commentaires
-    </h2>
-    <!-- Formulaire -->
-    <div style="display:flex;gap:10px;margin-bottom:16px;">
-        <input type="text" id="we-cmt-name" placeholder="Votre pseudo" maxlength="50"
-            style="width:140px;border:1px solid #d1d5db;border-radius:10px;padding:8px 12px;font-size:13px;background:inherit;color:inherit;outline:none;flex-shrink:0;"
-            onfocus="this.style.borderColor='#dc2626'" onblur="this.style.borderColor='#d1d5db'">
-        <input type="text" id="we-cmt-text" placeholder="Votre commentaire sur cette chaîne..."  maxlength="500"
-            style="flex:1;border:1px solid #d1d5db;border-radius:10px;padding:8px 12px;font-size:13px;background:inherit;color:inherit;outline:none;"
-            onkeydown="if(event.key==='Enter')wePostComment()"
-            onfocus="this.style.borderColor='#dc2626'" onblur="this.style.borderColor='#d1d5db'">
-        <button onclick="wePostComment()"
-            style="background:#dc2626;color:#fff;border:none;padding:8px 16px;border-radius:10px;cursor:pointer;font-size:13px;font-weight:700;white-space:nowrap;flex-shrink:0;">
-            Envoyer
-        </button>
-    </div>
-    <!-- Liste commentaires -->
-    <div id="we-comments-list" style="display:flex;flex-direction:column;gap:10px;">
-        <p style="font-size:13px;color:#9ca3af;text-align:center;padding:16px;">Chargement des commentaires...</p>
-    </div>
-    <div id="we-more-btn-wrap" style="display:none;text-align:center;margin-top:12px;">
-        <button onclick="weLoadComments(true)" style="background:#f3f4f6;border:1px solid #e5e7eb;padding:8px 20px;border-radius:10px;cursor:pointer;font-size:13px;font-weight:600;color:inherit;">
-            Voir plus de commentaires
-        </button>
-    </div>
-</div>
-
 <script>
+
 (function(){
     var _streamId2 = '{{ stream.id }}';
     var _page = 1;
@@ -12040,7 +12645,7 @@ document.addEventListener('DOMContentLoaded',function(){
 
             if (!d.comments || !d.comments.length) {
                 if (_page === 1) {
-                    list.innerHTML = '<p style="font-size:13px;color:#9ca3af;text-align:center;padding:16px;">Aucun commentaire. Soyez le premier !</p>';
+                    list.innerHTML = '<p class="card p-6 text-center text-sm text-ink-muted">Aucun commentaire. Soyez le premier !</p>';
                 }
                 if (moreBtn) moreBtn.style.display = 'none';
                 return;
@@ -12048,15 +12653,15 @@ document.addEventListener('DOMContentLoaded',function(){
 
             var html = d.comments.map(function(c){
                 var date = new Date(c.created_at).toLocaleDateString('fr-FR', {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
-                return '<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;">'
-                    +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">'
-                    +'<span style="font-size:12px;font-weight:700;color:#374151;">Anonyme</span>'
-                    +'<div style="display:flex;align-items:center;gap:8px;">'
-                    +'<span style="font-size:11px;color:#9ca3af;">'+date+'</span>'
-                    +'<button onclick="weReportComment('+c.id+')" style="background:none;border:none;cursor:pointer;color:#dc2626;font-size:11px;padding:2px 6px;" title="Signaler"></button>'
+                return '<div class="card p-3.5 text-sm">'
+                    +'<div class="mb-1.5 flex items-center justify-between">'
+                    +'<span class="text-xs font-semibold">Anonyme</span>'
+                    +'<div class="flex items-center gap-2">'
+                    +'<span class="text-[11px] text-ink-muted">'+date+'</span>'
+                    +'<button type="button" onclick="weReportComment('+c.id+')" class="flex items-center text-ink-muted hover:text-accent" title="Signaler">'+lwIcon('flag', 13)+'</button>'
                     +'</div>'
                     +'</div>'
-                    +'<p style="font-size:13px;margin:0;color:#374151;line-height:1.6;">'+_escHtml2(c.content)+'</p>'
+                    +'<p class="leading-relaxed">'+_escHtml2(c.content)+'</p>'
                     +'</div>';
             }).join('');
 
@@ -12071,7 +12676,7 @@ document.addEventListener('DOMContentLoaded',function(){
             if (moreBtn) moreBtn.style.display = loaded < _total ? 'block' : 'none';
 
         } catch(e) {
-            if (!loadMore) list.innerHTML = '<p style="font-size:13px;color:#dc2626;text-align:center;padding:16px;">Erreur chargement.</p>';
+            if (!loadMore) list.innerHTML = '<p class="card p-6 text-center text-sm text-accent">Erreur chargement.</p>';
         }
     };
 
@@ -12127,103 +12732,104 @@ document.addEventListener('DOMContentLoaded',function(){
         weLoadComments(false);
     });
 })();
-</script>
 
-{% endblock %}'''
+</script>
+{% endblock %}
+'''
     # ══════════════════════════════════════════════════════════════════
     # WATCH IPTV TEMPLATE
     # ══════════════════════════════════════════════════════════════════
     WATCH_IPTV_TEMPLATE = r'''{% extends "base.html" %}
 {% block title %}{{ channel.name }} - {{ app_name }}{% endblock %}
 {% block content %}
-<div style="display:grid;grid-template-columns:1fr 340px;gap:20px;" id="wi-layout">
-<style>@media(max-width:900px){[id="wi-layout"]{grid-template-columns:1fr!important;}}</style>
+{% from 'icons.html' import icon %}
+{% from 'components.html' import stream_card, cat_meta %}
+{% set cm = cat_meta.get(channel.category, cat_meta['iptv']) %}
+<div id="wi-layout" class="mx-auto grid max-w-5xl gap-8 lg:grid-cols-[1fr_320px]">
 
-<div>
-    <!-- Breadcrumb -->
-    <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#9ca3af;margin-bottom:12px;">
-        <a href="/" style="color:inherit;text-decoration:none;"></a><span>›</span>
-        <a href="/?playlist={{ channel.playlist_id }}" style="color:inherit;text-decoration:none;">{{ channel.country }}</a><span>›</span>
-        <span style="color:#374151;font-weight:600;">{{ channel.name }}</span>
-    </div>
+<div class="min-w-0">
+    <!-- Fil d'Ariane -->
+    <nav class="mb-3 flex flex-wrap items-center gap-1.5 text-xs text-ink-muted">
+        <a href="/" aria-label="Accueil" class="flex items-center hover:text-ink">{{ icon('house', 13) }}</a><span>›</span>
+        <a href="/?playlist={{ channel.playlist_id }}" class="hover:text-ink">{{ channel.country }}</a><span>›</span>
+        <span class="truncate text-ink">{{ channel.name }}</span>
+    </nav>
 
-    <!-- Player -->
-    <div style="background:#000;border-radius:16px;overflow:hidden;position:relative;aspect-ratio:16/9;margin-bottom:16px;">
-        <video id="wi-video" controls autoplay playsinline style="width:100%;height:100%;background:#000;"></video>
-        <div style="position:absolute;top:12px;left:12px;background:#dc2626;color:#fff;font-size:11px;font-weight:800;padding:4px 10px;border-radius:99px;" class="live-badge">LIVE</div>
-        <div style="position:absolute;top:12px;right:12px;display:flex;gap:8px;">
-            <button onclick="wiToggleFav()" style="width:34px;height:34px;background:rgba(0,0,0,.6);border:none;border-radius:50%;color:#f59e0b;cursor:pointer;font-size:15px;"></button>
-            <button onclick="wiFullscreen()" style="width:34px;height:34px;background:rgba(0,0,0,.6);border:none;border-radius:50%;color:#fff;cursor:pointer;font-size:15px;">⛶</button>
+    <!-- Lecteur -->
+    <div class="relative w-full overflow-hidden rounded-2xl bg-black" style="aspect-ratio:16/9">
+        <video id="wi-video" controls autoplay playsinline class="absolute inset-0 h-full w-full bg-black"></video>
+        <div class="pointer-events-none absolute left-3 top-3">
+            <span class="inline-flex items-center gap-1.5 rounded-full bg-accent px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white"><span class="live-dot bg-white"></span>DIRECT</span>
+        </div>
+        <div class="absolute right-3 top-3 z-10 flex gap-2">
+            <button type="button" onclick="wiToggleFav()" title="Ajouter aux favoris" aria-label="Ajouter aux favoris"
+                    class="flex h-9 w-9 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur-sm transition-colors hover:bg-black/75">{{ icon('star', 16) }}</button>
+            <button type="button" onclick="wiFullscreen()" title="Plein écran" aria-label="Plein écran"
+                    class="flex h-9 w-9 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur-sm transition-colors hover:bg-black/75">{{ icon('maximize', 16) }}</button>
         </div>
     </div>
 
     <!-- Infos -->
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
-        <div style="flex:1;min-width:0;">
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+    <div class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div class="min-w-0">
+            <div class="mb-1.5 flex flex-wrap items-center gap-2">
+                <span class="inline-flex items-center gap-1.5 rounded-full bg-accent px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white"><span class="live-dot bg-white"></span>DIRECT</span>
+                {% if channel.category %}<span class="rounded-full px-2 py-0.5 text-xs font-medium {{ cm[1] }} {{ cm[2] }}">{{ cm[3] if channel.category in cat_meta else channel.category }}</span>{% endif %}
+                {% if channel.language %}<span class="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium text-ink-muted">{{ channel.language }}</span>{% endif %}
+            </div>
+            <div class="flex items-center gap-3">
                 {% if channel.logo %}
-                <img src="{{ channel.logo }}" style="width:40px;height:40px;border-radius:10px;object-fit:contain;background:#f3f4f6;padding:4px;" onerror="this.style.display='none'">
+                <img src="{{ channel.logo }}" alt="" class="h-10 w-10 shrink-0 rounded-xl bg-surface-2 object-contain p-1" onerror="this.style.display='none'">
                 {% endif %}
-                <h1 style="font-size:1.3rem;font-weight:900;margin:0;">{{ channel.name }}</h1>
+                <h1 class="font-display text-xl font-semibold sm:text-2xl">{{ channel.name }}</h1>
             </div>
-            <div style="display:flex;flex-wrap:wrap;gap:8px;font-size:12px;color:#6b7280;">
-                {% if channel.country %}<span>{% if channel.country %}<img src="https://flagcdn.com/w20/{{ channel.country|lower }}.png" style="width:16px;height:11px;object-fit:cover;border-radius:2px;vertical-align:middle;margin-right:4px;" onerror="this.style.display='none'">{% endif %}{{ channel.country }}</span>{% endif %}
-                {% if channel.category %}<span>{{ channel.category }}</span>{% endif %}
-                {% if channel.language %}<span>{{ channel.language }}</span>{% endif %}
-                <span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:99px;font-weight:700;" class="live-badge">EN DIRECT</span>
-            </div>
+            {% if channel.country %}
+            <p class="mt-1 flex items-center gap-1.5 text-sm text-ink-muted">
+                <img src="https://flagcdn.com/w20/{{ channel.country|lower }}.png" alt="" class="h-3 rounded-sm object-cover" onerror="this.style.display='none'">{{ channel.country }}
+            </p>
+            {% endif %}
         </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;flex-shrink:0;">
-            <button onclick="wiRecord()" id="wi-rec-btn"
-                style="display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:10px;background:#fee2e2;color:#dc2626;border:none;cursor:pointer;font-size:13px;font-weight:700;">
-                <i class="fas fa-circle" style="font-size:10px;"></i> <span id="wi-rec-label">Enregistrer</span>
+        <div class="flex shrink-0 items-center gap-2">
+            <button type="button" onclick="wiRecord()" id="wi-rec-btn"
+                    class="flex items-center gap-1.5 rounded-full border border-accent/40 px-4 py-2 text-sm font-medium text-accent transition-colors hover:bg-accent/10">
+                <i class="fas fa-circle" style="font-size:.6em"></i> <span id="wi-rec-label">Enregistrer</span>
             </button>
-            <button onclick="wiReport()"
-                style="padding:8px 14px;border-radius:10px;background:#f3f4f6;border:none;cursor:pointer;font-size:13px;font-weight:600;color:inherit;">
-                Signaler
+            <button type="button" onclick="wiReport()"
+                    class="flex items-center gap-1.5 rounded-full border border-border px-4 py-2 text-sm font-medium text-ink-muted hover:text-ink">
+                {{ icon('flag', 15) }} Signaler
             </button>
         </div>
     </div>
 
     <!-- Erreur -->
-    <div id="wi-err" style="display:none;background:#fee2e2;border:1px solid #fecaca;color:#dc2626;padding:14px 18px;border-radius:12px;font-size:13px;margin-bottom:14px;">
-        <strong>Problème de lecture</strong><br>
-        <span id="wi-err-msg">Le flux ne répond pas.</span><br>
-        <button onclick="wiRetry()" style="margin-top:8px;background:#dc2626;color:#fff;border:none;padding:7px 16px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;">Réessayer</button>
+    <div id="wi-err" class="mt-4 hidden rounded-xl border border-accent/30 bg-accent/10 px-4 py-3 text-sm text-accent">
+        <strong class="font-semibold">Problème de lecture</strong><br>
+        <span id="wi-err-msg">Le flux ne répond pas.</span>
+        <div class="mt-3">
+            <button type="button" onclick="wiRetry()" class="rounded-full bg-accent px-4 py-1.5 text-xs font-semibold text-white hover:opacity-90">Réessayer</button>
+        </div>
     </div>
 </div>
 
 <!-- SIDEBAR -->
-<div style="display:flex;flex-direction:column;gap:16px;">
-    <style>html.dark .wi-sb{background:#1f2937!important;border-color:#374151!important;}</style>
-
-    <!-- Autres chaînes du même pays -->
+<div>
+    <div class="mb-4 flex items-center justify-between"><h2 class="font-display text-lg font-semibold">Autres chaînes — {{ channel.country }}</h2></div>
     {% if other_channels %}
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;" class="wi-sb">
-        <div style="padding:12px 16px;border-bottom:1px solid #e5e7eb;"><strong style="font-size:13px;">Autres chaînes — {{ channel.country }}</strong></div>
-        <div style="padding:8px;max-height:320px;overflow-y:auto;" class="custom-scroll">
-            {% for ch in other_channels[:12] %}
-            <a href="/watch/iptv/{{ ch.id }}"
-               style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-radius:10px;text-decoration:none;color:inherit;transition:background .15s;"
-               onmouseover="this.style.background='rgba(220,38,38,.05)'" onmouseout="this.style.background=''">
-                <div style="width:36px;height:36px;border-radius:8px;background:#f3f4f6;flex-shrink:0;display:flex;align-items:center;justify-content:center;overflow:hidden;">
-                    {% if ch.logo %}<img src="{{ ch.logo }}" style="width:100%;height:100%;object-fit:contain;padding:3px;" onerror="this.style.display='none'">
-                    {% else %}<i class="fas fa-tv" style="color:#d1d5db;font-size:13px;"></i>{% endif %}
-                </div>
-                <div style="flex:1;min-width:0;">
-                    <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ ch.name }}</div>
-                    <div style="font-size:11px;color:#9ca3af;">{{ ch.category or 'TV' }}</div>
-                </div>
-                <div style="width:8px;height:8px;border-radius:50%;background:#22c55e;flex-shrink:0;" class="live-badge"></div>
-            </a>
-            {% endfor %}
-        </div>
+    <div class="custom-scroll grid max-h-[640px] gap-3 overflow-y-auto pr-1">
+        {% for ch in other_channels[:12] %}
+        {{ stream_card('/watch/iptv/' ~ ch.id, ch.name, ch.logo, (ch.category if ch.category in cat_meta else 'iptv'), (cat_meta.get(ch.category, cat_meta['iptv'])[3] if ch.category else 'TV')) }}
+        {% endfor %}
     </div>
+    {% else %}
+    <p class="text-sm text-ink-muted">Aucune autre chaîne pour l'instant.</p>
     {% endif %}
 </div>
 </div>
+{% endblock %}
 
+{% block scripts %}
 <script>
+
 (function(){
     // ═══════════════════════════════════════════════════════════
     // LECTEUR IPTV — Chaîne de fallback 5 niveaux
@@ -12410,13 +13016,13 @@ document.addEventListener('DOMContentLoaded',function(){
             };
             _recMR.start(1000); _recActive=true;
             if(lbl) lbl.textContent='Arrêter';
-            if(btn){ btn.style.background='#dc2626'; btn.style.color='#fff'; }
+            if(btn){ btn.classList.add('rec-on'); }
             showNotification('Enregistrement démarré','info');
         } else {
             if(_recMR&&_recMR.state!=='inactive') _recMR.stop();
             _recActive=false;
             if(lbl) lbl.textContent='Enregistrer';
-            if(btn){ btn.style.background='#fee2e2'; btn.style.color='#dc2626'; }
+            if(btn){ btn.classList.remove('rec-on'); }
         }
     };
 
@@ -12427,8 +13033,10 @@ document.addEventListener('DOMContentLoaded',function(){
         wiInit();
     }
 })();
+
 </script>
-{% endblock %}'''
+{% endblock %}
+'''
 
     # ══════════════════════════════════════════════════════════════════
     # WATCH USER TEMPLATE
@@ -12436,108 +13044,100 @@ document.addEventListener('DOMContentLoaded',function(){
     WATCH_USER_TEMPLATE = r'''{% extends "base.html" %}
 {% block title %}{{ stream.title }} en direct - {{ app_name }}{% endblock %}
 {% block content %}
-<div style="display:grid;grid-template-columns:1fr 340px;gap:20px;" id="wu-layout">
-<style>@media(max-width:960px){[id="wu-layout"]{grid-template-columns:1fr!important;}}</style>
+{% from 'icons.html' import icon %}
+{% from 'components.html' import cat_meta %}
+{% set cm = cat_meta.get(stream.category, cat_meta['entertainment']) %}
+<div id="wu-layout" class="mx-auto grid max-w-5xl gap-8 lg:grid-cols-[1fr_340px]">
 
-<div>
-    <!-- Player -->
-    <div style="background:#000;border-radius:16px;overflow:hidden;position:relative;aspect-ratio:16/9;margin-bottom:16px;">
+<div class="min-w-0">
+    <!-- Lecteur -->
+    <div class="relative w-full overflow-hidden rounded-2xl bg-black" style="aspect-ratio:16/9">
         {% if stream.stream_url %}
-        <video id="wu-video" controls autoplay playsinline style="width:100%;height:100%;"></video>
+        <video id="wu-video" controls autoplay playsinline class="absolute inset-0 h-full w-full bg-black"></video>
         {% else %}
-        <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:rgba(255,255,255,.6);">
-            <i class="fas fa-satellite-dish" style="font-size:3rem;margin-bottom:12px;"></i>
-            <p style="font-size:14px;margin:0;">Stream en cours de démarrage...</p>
+        <div class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-gradient-to-br from-[#0A0E1A] to-[#1B2233] text-white/70">
+            {{ icon('satellite-dish', 40) }}
+            <p class="text-sm">Stream en cours de démarrage...</p>
         </div>
         {% endif %}
-        <!-- Live badge -->
         {% if stream.is_live %}
-        <div style="position:absolute;top:12px;left:12px;background:#dc2626;color:#fff;font-size:11px;font-weight:800;padding:4px 10px;border-radius:99px;" class="live-badge">EN DIRECT</div>
+        <div class="pointer-events-none absolute left-3 top-3">
+            <span class="inline-flex items-center gap-1.5 rounded-full bg-accent px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white"><span class="live-dot bg-white"></span>EN DIRECT</span>
+        </div>
         {% endif %}
-        <!-- Viewer count -->
-        <div id="wu-viewers" style="position:absolute;top:12px;right:12px;background:rgba(0,0,0,.6);color:#fff;font-size:12px;padding:4px 10px;border-radius:99px;">{{ stream.viewer_count }} spectateurs</div>
+        <div id="wu-viewers" class="pointer-events-none absolute right-3 top-3 rounded-md bg-black/55 px-2 py-1 text-[11px] font-medium text-white backdrop-blur-sm">{{ stream.viewer_count }} spectateurs</div>
     </div>
 
     <!-- Infos -->
-    <div style="margin-bottom:16px;">
-        <h1 style="font-size:1.4rem;font-weight:900;margin:0 0 8px;">{{ stream.title }}</h1>
-        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:13px;color:#6b7280;margin-bottom:10px;">
-            <span style="font-weight:700;color:#374151;">{{ stream.category }}</span>
-            {% if stream.is_live %}<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:800;" class="live-badge">LIVE</span>{% endif %}
-            <span>{{ stream.like_count }}</span>
-            <span>{{ stream.viewer_count }}</span>
+    <div class="mt-4">
+        <div class="mb-1.5 flex flex-wrap items-center gap-2">
+            {% if stream.is_live %}<span class="inline-flex items-center gap-1.5 rounded-full bg-accent px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white"><span class="live-dot bg-white"></span>LIVE</span>{% endif %}
+            <span class="rounded-full px-2 py-0.5 text-xs font-medium {{ cm[1] }} {{ cm[2] }}">{{ cm[3] if stream.category in cat_meta else stream.category }}</span>
         </div>
-        {% if stream.description %}<p style="font-size:14px;line-height:1.7;color:#374151;margin:0 0 12px;">{{ stream.description }}</p>{% endif %}
+        <h1 class="font-display text-xl font-semibold sm:text-2xl">{{ stream.title }}</h1>
+        <p class="mt-1 flex items-center gap-4 text-sm text-ink-muted">
+            <span class="flex items-center gap-1.5">{{ icon('heart', 14) }} {{ stream.like_count }}</span>
+            <span class="flex items-center gap-1.5">{{ icon('eye', 14) }} {{ stream.viewer_count }}</span>
+        </p>
+        {% if stream.description %}<p class="card mt-3 p-4 text-sm leading-relaxed text-ink-muted">{{ stream.description }}</p>{% endif %}
         {% if stream.tags %}
-        <div style="display:flex;flex-wrap:wrap;gap:6px;">
+        <div class="mt-3 flex flex-wrap gap-2">
             {% for tag in stream.tags.split(',') if tag.strip() %}
-            <span style="background:#f3f4f6;color:#374151;padding:4px 12px;border-radius:99px;font-size:12px;">#{{ tag.strip() }}</span>
+            <span class="rounded-full border border-border px-3 py-1 text-xs font-medium text-ink-muted">#{{ tag.strip() }}</span>
             {% endfor %}
         </div>
         {% endif %}
     </div>
 
     <!-- Actions -->
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px;">
-        <button onclick="wuLike()" id="wu-like-btn"
-            style="display:flex;align-items:center;gap:6px;padding:9px 18px;border-radius:10px;background:#fee2e2;color:#dc2626;border:none;cursor:pointer;font-size:14px;font-weight:700;">
-            <span id="wu-like-count">{{ stream.like_count }}</span> J'aime
+    <div class="mt-4 flex flex-wrap items-center gap-2">
+        <button type="button" onclick="wuLike()" id="wu-like-btn" class="flex items-center gap-1.5 rounded-full border border-border px-4 py-2 text-sm font-medium text-ink-muted transition-colors hover:border-accent hover:text-accent">
+            {{ icon('heart', 15) }} <span id="wu-like-count">{{ stream.like_count }}</span> J'aime
         </button>
-        <button onclick="addToFavorites('{{ stream.id }}','user',null)"
-            style="display:flex;align-items:center;gap:6px;padding:9px 18px;border-radius:10px;background:#fef9c3;color:#a16207;border:none;cursor:pointer;font-size:14px;font-weight:700;">
-            Favoris
+        <button type="button" onclick="addToFavorites('{{ stream.id }}','user',null)" class="flex items-center gap-1.5 rounded-full border border-border px-4 py-2 text-sm font-medium text-ink-muted hover:text-ink">
+            {{ icon('star', 15) }} Favoris
         </button>
-        <button onclick="wuShare()"
-            style="display:flex;align-items:center;gap:6px;padding:9px 18px;border-radius:10px;background:#dbeafe;color:#1d4ed8;border:none;cursor:pointer;font-size:14px;font-weight:700;">
-            Partager
+        <button type="button" onclick="wuShare()" class="flex items-center gap-1.5 rounded-full border border-border px-4 py-2 text-sm font-medium text-ink-muted hover:text-ink">
+            {{ icon('share-2', 15) }} Partager
         </button>
-        <button onclick="wuReport()"
-            style="padding:9px 18px;border-radius:10px;background:#f3f4f6;border:none;cursor:pointer;font-size:13px;font-weight:600;color:inherit;">
-            Signaler
+        <button type="button" onclick="wuReport()" class="flex items-center gap-1.5 rounded-full border border-border px-4 py-2 text-sm font-medium text-ink-muted hover:text-ink">
+            {{ icon('flag', 15) }} Signaler
         </button>
     </div>
 
     <!-- Erreur lecteur -->
-    <div id="wu-err" style="display:none;background:#fee2e2;border:1px solid #fecaca;color:#dc2626;padding:14px 18px;border-radius:12px;font-size:13px;margin-bottom:14px;">
-        <strong>Problème de lecture</strong><br>
+    <div id="wu-err" class="mt-4 hidden rounded-xl border border-accent/30 bg-accent/10 px-4 py-3 text-sm text-accent">
+        <strong class="font-semibold">Problème de lecture</strong><br>
         <span id="wu-err-msg">Le flux ne répond pas.</span>
     </div>
 </div>
 
-<!-- CHAT SIDEBAR -->
+<!-- CHAT -->
 <div>
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;display:flex;flex-direction:column;" id="wu-chat-box">
-        <style>html.dark #wu-chat-box{background:#1f2937;border-color:#374151;}</style>
-        <div style="background:linear-gradient(to right,#dc2626,#f97316);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;">
-            <strong style="color:#fff;font-size:13px;">Chat en direct</strong>
-            <span id="wu-online" style="color:rgba(255,255,255,.8);font-size:12px;">• 0 en ligne</span>
+    <div id="wu-chat-box" class="card flex h-[560px] flex-col overflow-hidden">
+        <div class="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
+            <strong class="font-display text-base font-semibold">Chat en direct</strong>
+            <span id="wu-online" class="text-xs text-emerald-600 dark:text-emerald-400">● 0 en ligne</span>
         </div>
-
-        <!-- Messages -->
-        <div id="wu-messages" class="custom-scroll"
-             style="flex:1;overflow-y:auto;padding:10px;height:380px;display:flex;flex-direction:column;gap:6px;">
-            <div style="text-align:center;padding:20px 0;color:#9ca3af;font-size:12px;">
-                <i class="fas fa-comments" style="font-size:1.5rem;margin-bottom:8px;display:block;"></i>
+        <div id="wu-messages" class="custom-scroll flex-1 space-y-3 overflow-y-auto p-4">
+            <div class="flex flex-col items-center gap-2 py-6 text-center text-sm text-ink-muted">
+                <i class="fas fa-comments" style="font-size:1.6rem"></i>
                 Rejoignez la conversation !
             </div>
         </div>
-
-        <!-- Saisie -->
-        <div style="padding:10px;border-top:1px solid #e5e7eb;display:flex;gap:8px;flex-shrink:0;">
-            <input id="wu-chat-input" type="text" maxlength="500" placeholder="Votre message..."
-                   style="flex:1;border:1px solid #d1d5db;border-radius:8px;padding:8px 12px;font-size:13px;outline:none;background:inherit;color:inherit;"
-                   onkeydown="if(event.key==='Enter')wuSendMsg()"
-                   onfocus="this.style.borderColor='#dc2626'" onblur="this.style.borderColor='#d1d5db'">
-            <button onclick="wuSendMsg()"
-                style="background:#dc2626;color:#fff;border:none;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700;flex-shrink:0;">
-                Envoyer
-            </button>
+        <div class="flex shrink-0 items-center gap-2 border-t border-border p-3">
+            <input id="wu-chat-input" type="text" maxlength="500" placeholder="Votre message..." onkeydown="if(event.key==='Enter')wuSendMsg()"
+                   class="min-w-0 flex-1 rounded-full border border-border bg-surface px-4 py-2.5 text-sm outline-none placeholder:text-ink-muted focus-visible:border-accent-2">
+            <button type="button" onclick="wuSendMsg()" aria-label="Envoyer" class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-accent-2 text-white">{{ icon('send', 15) }}</button>
         </div>
     </div>
 </div>
 </div>
+{% endblock %}
 
+{% block scripts %}
 <script>
+
 (function(){
     var _streamId  = '{{ stream.id }}';
     var _streamUrl = '{{ stream.stream_url or "" }}';
@@ -12607,18 +13207,13 @@ document.addEventListener('DOMContentLoaded',function(){
         var el = document.getElementById('wu-messages');
         if (!el) return;
         var isSelf = user===_username;
-        var isDark = document.documentElement.classList.contains('dark');
         var time = ts ? new Date(ts).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}) : new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
         var div = document.createElement('div');
-        div.style.cssText = 'display:flex;flex-direction:column;'+(isSelf?'align-items:flex-end;':'');
-        var bubbleBg    = isSelf ? '#dc2626' : (isDark ? '#374151' : '#f3f4f6');
-        var bubbleColor = isSelf ? '#fff'    : (isDark ? '#f9fafb' : '#111827');
-        var bubbleRadius = isSelf ? '12px 12px 4px 12px' : '12px 12px 12px 4px';
+        div.className = 'flex flex-col ' + (isSelf ? 'items-end' : 'items-start');
         div.innerHTML =
-            '<div style="font-size:11px;color:#9ca3af;margin-bottom:2px;'+(isSelf?'text-align:right;':'')+'">'
-            +user+' · '+time+'</div>'
-            +'<div style="max-width:85%;padding:8px 12px;border-radius:'+bubbleRadius+';font-size:13px;line-height:1.4;'
-            +'background:'+bubbleBg+';color:'+bubbleColor+';">'+_escHtml(text)+'</div>';
+            '<div class="mb-0.5 text-[11px] text-ink-muted">'+_escHtml(user)+' · '+time+'</div>'
+            +'<div class="max-w-[85%] break-words px-3 py-2 text-[13px] leading-snug '
+            + (isSelf ? 'rounded-2xl rounded-br-sm bg-accent text-white' : 'rounded-2xl rounded-bl-sm bg-surface-2') + '">'+_escHtml(text)+'</div>';
         el.appendChild(div);
         el.scrollTop = el.scrollHeight;
         // Garder max 80 messages
@@ -12686,61 +13281,60 @@ document.addEventListener('DOMContentLoaded',function(){
     wuInitPlayer();
     wuConnectWS();
 })();
+
 </script>
-{% endblock %}'''
+{% endblock %}
+'''
     # ══════════════════════════════════════════════════════════════════
     # EVENTS TEMPLATE
     # ══════════════════════════════════════════════════════════════════
     EVENTS_TEMPLATE = r'''{% extends "base.html" %}
 {% block title %}Événements & Programmes - {{ app_name }}{% endblock %}
 {% block content %}
-<div style="max-width:1200px;margin:0 auto;">
+{% from 'icons.html' import icon %}
+{%- set ev_meta = {
+    'sport':       ('trophy',       'bg-blue-100 dark:bg-blue-500/15',       'text-blue-600 dark:text-blue-400',       'Sports'),
+    'cinema':      ('film',         'bg-purple-100 dark:bg-purple-500/15',   'text-purple-600 dark:text-purple-400',   'Cinéma & Films'),
+    'news':        ('newspaper',    'bg-red-100 dark:bg-red-500/15',         'text-red-600 dark:text-red-400',         'Actualités'),
+    'kids':        ('baby',         'bg-yellow-100 dark:bg-yellow-500/15',   'text-yellow-600 dark:text-yellow-500',   'Enfants & Famille'),
+    'documentary': ('film',         'bg-amber-100 dark:bg-amber-500/15',     'text-amber-600 dark:text-amber-400',     'Documentaires'),
+    'music':       ('music-2',      'bg-pink-100 dark:bg-pink-500/15',       'text-pink-600 dark:text-pink-400',       'Musique & Concerts'),
+    'other':       ('tv',           'bg-indigo-100 dark:bg-indigo-500/15',   'text-indigo-600 dark:text-indigo-400',   'Divers'),
+} -%}
+{%- set ann_style = {
+    'info':    'border-accent-2/30 bg-accent-2-soft text-accent-2',
+    'warning': 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400',
+    'update':  'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
+    'feature': 'border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-600 dark:text-fuchsia-400',
+} -%}
+<div class="mx-auto max-w-3xl">
 
-    <!-- Header -->
-    <div style="background:linear-gradient(135deg,#1e1b4b,#312e81,#4338ca);border-radius:20px;padding:40px 32px;color:#fff;margin-bottom:32px;position:relative;overflow:hidden;">
-        <div style="position:absolute;inset:0;opacity:.06;font-size:12rem;display:flex;align-items:center;justify-content:flex-end;padding-right:24px;pointer-events:none;"></div>
-        <div style="position:relative;">
-            <h1 style="font-size:2rem;font-weight:900;margin:0 0 10px;">Événements & Programmes</h1>
-            <p style="font-size:14px;color:rgba(255,255,255,.8);margin:0 0 20px;">Tous les programmes TV, événements sportifs et annonces officielles</p>
-            <div style="display:flex;flex-wrap:wrap;gap:10px;">
-                {% for cat in ['sport','cinema','news','kids','documentary','music','other'] %}
-                <button onclick="evFilter('{{ cat }}',this)"
-                    class="ev-filter-btn"
-                    style="padding:7px 18px;border-radius:99px;border:1px solid rgba(255,255,255,.3);background:rgba(255,255,255,.1);color:#fff;font-size:12px;font-weight:700;cursor:pointer;transition:all .15s;">
-                    {{ {'sport':'Sport','cinema':'Cinéma','news':'News','kids':'Enfants','documentary':'Docs','music':'Musique','other':'Autres'}[cat] }}
-                </button>
-                {% endfor %}
-                <button onclick="evFilter('all',this)"
-                    class="ev-filter-btn active-ev"
-                    style="padding:7px 18px;border-radius:99px;border:1px solid rgba(255,255,255,.6);background:rgba(255,255,255,.25);color:#fff;font-size:12px;font-weight:700;cursor:pointer;">
-                    Tout
-                </button>
-            </div>
-        </div>
+    <!-- En-tête -->
+    <h1 class="mb-1 font-display text-2xl font-semibold">Événements &amp; Programmes</h1>
+    <p class="mb-5 text-sm text-ink-muted">Tous les programmes TV, événements sportifs et annonces officielles</p>
+
+    <div class="-mx-1 mb-6 flex gap-2 overflow-x-auto px-1 pb-1" style="scrollbar-width:none">
+        <button type="button" onclick="evFilter('all',this)"
+                class="ev-filter-btn shrink-0 rounded-full border border-accent bg-accent px-4 py-1.5 text-xs font-semibold text-white transition-colors">Tout</button>
+        {% for cat in ['sport','cinema','news','kids','documentary','music','other'] %}
+        <button type="button" onclick="evFilter('{{ cat }}',this)"
+                class="ev-filter-btn shrink-0 rounded-full border border-border px-4 py-1.5 text-xs font-semibold text-ink-muted transition-colors hover:text-ink">
+            {{ {'sport':'Sport','cinema':'Cinéma','news':'News','kids':'Enfants','documentary':'Docs','music':'Musique','other':'Autres'}[cat] }}
+        </button>
+        {% endfor %}
     </div>
 
     <!-- Annonces officielles -->
     {% if announcements %}
-    <section style="margin-bottom:32px;" id="ev-announcements">
-        <h2 style="font-size:1.1rem;font-weight:800;margin:0 0 16px;display:flex;align-items:center;gap:8px;">
-            <span style="width:28px;height:28px;background:#fef9c3;border-radius:8px;display:flex;align-items:center;justify-content:center;"></span>
-            Annonces officielles
-        </h2>
-        <div style="display:flex;flex-direction:column;gap:10px;">
+    <section id="ev-announcements" class="mb-6">
+        <div class="space-y-2">
             {% for ann in announcements %}
-            {% set type_styles = {
-                'info': ('', '#dbeafe', '#1d4ed8', '#bfdbfe'),
-                'warning': ('', '#fef9c3', '#92400e', '#fde68a'),
-                'update': ('', '#dcfce7', '#15803d', '#bbf7d0'),
-                'feature': ('', '#f5f3ff', '#7c3aed', '#ddd6fe')
-            } %}
-            {% set ts = type_styles.get(ann.type, ('','#f3f4f6','#374151','#e5e7eb')) %}
-            <div style="display:flex;gap:14px;padding:16px;border-radius:14px;background:{{ ts[1] }};border:1px solid {{ ts[3] }};">
-                <div style="font-size:1.4rem;flex-shrink:0;margin-top:2px;">{{ ts[0] }}</div>
-                <div style="flex:1;">
-                    <div style="font-size:14px;font-weight:800;color:{{ ts[2] }};margin-bottom:4px;">{{ ann.title }}</div>
-                    <div style="font-size:13px;color:{{ ts[2] }};opacity:.85;line-height:1.6;">{{ ann.message }}</div>
-                    <div style="font-size:11px;color:{{ ts[2] }};opacity:.6;margin-top:6px;">{{ ann.created_at.strftime('%d/%m/%Y à %H:%M') }}</div>
+            <div class="flex items-start gap-2.5 rounded-xl border px-4 py-3 text-sm {{ ann_style.get(ann.type, ann_style['info']) }}">
+                <span class="mt-0.5 shrink-0">{{ icon('megaphone', 16) }}</span>
+                <div class="min-w-0">
+                    <p class="font-semibold">{{ ann.title }}</p>
+                    <p class="mt-0.5 opacity-90">{{ ann.message }}</p>
+                    <p class="mt-1 text-[11px] opacity-70">{{ ann.created_at.strftime('%d/%m/%Y · %H:%M') }}</p>
                 </div>
             </div>
             {% endfor %}
@@ -12750,61 +13344,43 @@ document.addEventListener('DOMContentLoaded',function(){
 
     <!-- Grille d'événements par catégorie -->
     {% set cats = [
-        ('sport','','Sports',events.get('sport',[])),
-        ('cinema','','Cinéma & Films',events.get('cinema',[])),
-        ('news','','Actualités',events.get('news',[])),
-        ('kids','','Enfants & Famille',events.get('kids',[])),
-        ('documentary','','Documentaires',events.get('documentary',[])),
-        ('music','','Musique & Concerts',events.get('music',[])),
-        ('other','','Divers',events.get('other',[]))
+        ('sport','Sports',events.get('sport',[])),
+        ('cinema','Cinéma & Films',events.get('cinema',[])),
+        ('news','Actualités',events.get('news',[])),
+        ('kids','Enfants & Famille',events.get('kids',[])),
+        ('documentary','Documentaires',events.get('documentary',[])),
+        ('music','Musique & Concerts',events.get('music',[])),
+        ('other','Divers',events.get('other',[]))
     ] %}
 
-    {% for cat_id, icon, cat_name, cat_events in cats %}
+    {% for cat_id, cat_name, cat_events in cats %}
     {% if cat_events %}
-    <section class="ev-section" data-cat="{{ cat_id }}" style="margin-bottom:32px;">
-        <h2 style="font-size:1.1rem;font-weight:800;margin:0 0 16px;display:flex;align-items:center;gap:8px;">
-            <span style="width:28px;height:28px;background:#f3f4f6;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:14px;">{{ icon }}</span>
-            {{ cat_name }}
-            <span style="font-size:13px;font-weight:500;color:#9ca3af;">({{ cat_events|length }})</span>
-        </h2>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;">
+    {% set m = ev_meta[cat_id] %}
+    <section class="ev-section mb-6" data-cat="{{ cat_id }}">
+        <p class="mb-3 flex items-center gap-2 text-sm font-medium text-ink-muted">
+            <span class="{{ m[2] }}">{{ icon(m[0], 15) }}</span>
+            {{ cat_name }} <span class="text-xs">({{ cat_events|length }})</span>
+        </p>
+        <div class="space-y-3">
             {% for ev in cat_events %}
-            <div class="ev-card" data-cat="{{ cat_id }}"
-                 style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;transition:all .2s;cursor:pointer;"
-                 onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 8px 24px rgba(0,0,0,.1)'"
-                 onmouseout="this.style.transform='';this.style.boxShadow=''">
-                <style>html.dark .ev-card{background:#1f2937;border-color:#374151;}</style>
-                <!-- Color band -->
-                <div style="height:4px;background:{% if cat_id=='sport' %}linear-gradient(to right,#16a34a,#22c55e){% elif cat_id=='cinema' %}linear-gradient(to right,#7c3aed,#a855f7){% elif cat_id=='news' %}linear-gradient(to right,#2563eb,#3b82f6){% elif cat_id=='kids' %}linear-gradient(to right,#f59e0b,#fbbf24){% elif cat_id=='documentary' %}linear-gradient(to right,#0891b2,#06b6d4){% elif cat_id=='music' %}linear-gradient(to right,#dc2626,#f97316){% else %}linear-gradient(to right,#6b7280,#9ca3af){% endif %};"></div>
-                <div style="padding:14px;">
-                    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:8px;">
-                        <h3 style="font-size:14px;font-weight:800;margin:0;line-height:1.3;flex:1;">{{ ev.title }}</h3>
-                        <span style="font-size:1.1rem;flex-shrink:0;">{{ icon }}</span>
-                    </div>
-                    {% if ev.description %}
-                    <p style="font-size:12px;color:#6b7280;margin:0 0 8px;line-height:1.5;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">{{ ev.description }}</p>
+            <div class="ev-card card flex items-center gap-4 p-4" data-cat="{{ cat_id }}">
+                <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl {{ m[1] }}"><span class="{{ m[2] }}">{{ icon(m[0], 19) }}</span></div>
+                <div class="min-w-0 flex-1">
+                    <p class="truncate font-medium">{{ ev.title }}</p>
+                    {% if ev.description %}<p class="line-clamp-2 text-xs text-ink-muted">{{ ev.description }}</p>{% endif %}
+                    <p class="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-ink-muted">
+                        <span>{{ m[3] }}</span>
+                        {% if ev.channel_name %}<span>· {{ ev.channel_name }}</span>{% endif %}
+                        {% if ev.country %}<span class="inline-flex items-center gap-1">· {% if ev.country_code %}<img src="https://flagcdn.com/w20/{{ ev.country_code|lower }}.png" alt="" class="h-3 rounded-sm" onerror="this.style.display='none'">{% endif %}{{ ev.country }}</span>{% endif %}
+                    </p>
+                </div>
+                <div class="flex shrink-0 flex-col items-end gap-1.5 text-xs text-ink-muted">
+                    {% if ev.start_time %}
+                    <span class="flex items-center gap-1">{{ icon('calendar', 12) }} {{ ev.start_time.strftime('%d/%m/%Y') }}</span>
+                    <span class="flex items-center gap-1">{{ icon('clock', 12) }} {{ ev.start_time.strftime('%H:%M') }}</span>
                     {% endif %}
-                    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid #f3f4f6;">
-                        <div style="display:flex;flex-direction:column;gap:2px;">
-                            {% if ev.channel_name %}<div style="font-size:11px;color:#9ca3af;font-weight:600;">{{ ev.channel_name }}</div>{% endif %}
-                            {% if ev.country %}<div style="display:flex;align-items:center;gap:4px;font-size:11px;color:#9ca3af;">
-                                {% if ev.country_code %}<img src="https://flagcdn.com/w20/{{ ev.country_code|lower }}.png" style="width:14px;height:10px;object-fit:cover;border-radius:2px;" onerror="this.style.display='none'">{% endif %}
-                                {{ ev.country }}
-                            </div>{% endif %}
-                        </div>
-                        {% if ev.start_time %}
-                        <div style="text-align:right;">
-                            <div style="font-size:12px;font-weight:800;color:#dc2626;">{{ ev.start_time.strftime('%H:%M') }}</div>
-                            <div style="font-size:10px;color:#9ca3af;">{{ ev.start_time.strftime('%d/%m/%Y') }}</div>
-                        </div>
-                        {% endif %}
-                    </div>
                     {% if ev.stream_url %}
-                    <a href="{{ ev.stream_url }}" target="_blank"
-                       style="display:block;margin-top:10px;text-align:center;background:#dc2626;color:#fff;padding:7px;border-radius:8px;text-decoration:none;font-size:12px;font-weight:700;transition:background .15s;"
-                       onmouseover="this.style.background='#b91c1c'" onmouseout="this.style.background='#dc2626'">
-                        Regarder
-                    </a>
+                    <a href="{{ ev.stream_url }}" target="_blank" rel="noopener" class="rounded-full bg-accent px-3 py-1 text-[11px] font-semibold text-white hover:opacity-90">Regarder</a>
                     {% endif %}
                 </div>
             </div>
@@ -12817,69 +13393,58 @@ document.addEventListener('DOMContentLoaded',function(){
     <!-- Si aucun événement -->
     {% set total_events = (events.get('sport',[])|length + events.get('cinema',[])|length + events.get('news',[])|length + events.get('kids',[])|length + events.get('documentary',[])|length + events.get('music',[])|length + events.get('other',[])|length) %}
     {% if total_events == 0 %}
-    <div style="text-align:center;padding:64px 20px;">
-        <div style="font-size:4rem;margin-bottom:16px;"></div>
-        <h2 style="font-size:1.4rem;font-weight:800;margin:0 0 10px;">Aucun programme disponible</h2>
-        <p style="color:#6b7280;font-size:14px;margin:0 0 20px;">Les événements seront disponibles une fois que l'administrateur les aura chargés.</p>
-        <a href="/" style="background:#dc2626;color:#fff;padding:12px 24px;border-radius:12px;text-decoration:none;font-weight:700;font-size:14px;">
-            ← Retour à l'accueil
-        </a>
+    <div class="card flex flex-col items-center gap-2 p-10 text-center text-ink-muted">
+        <span class="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent-2-soft text-accent-2">{{ icon('calendar', 22) }}</span>
+        <p class="font-medium text-ink">Aucun programme disponible</p>
+        <p class="text-sm">Les événements seront disponibles une fois que l'administrateur les aura chargés.</p>
+        <a href="/" class="mt-2 text-sm font-medium text-accent-2 hover:underline">← Retour à l'accueil</a>
     </div>
     {% endif %}
-</div>
 
+    <!-- Compte à rebours -->
+    {% if events.get('sport') or events.get('cinema') %}
+    <section class="mt-8">
+        <p class="mb-3 text-sm font-medium text-ink-muted">Prochainement — Dans moins d'une heure</p>
+        <div id="upcoming-soon" class="space-y-3"></div>
+        <div id="upcoming-empty" class="card hidden p-6 text-center text-sm text-ink-muted">Aucun événement prévu dans la prochaine heure.</div>
+    </section>
+    {% endif %}
+
+    <!-- Calendrier semaine -->
+    <section class="mt-8">
+        <p class="mb-3 text-sm font-medium text-ink-muted">Cette semaine</p>
+        <div class="custom-scroll -mx-1 mb-4 flex gap-2 overflow-x-auto px-1 pb-1" id="week-nav"></div>
+        <div id="week-content"><p class="card p-6 text-center text-sm text-ink-muted">Sélectionnez un jour</p></div>
+    </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
 <script>
 function evFilter(cat, btn) {
-    // Styling boutons
     document.querySelectorAll('.ev-filter-btn').forEach(function(b){
-        b.style.background = 'rgba(255,255,255,.1)';
-        b.style.borderColor = 'rgba(255,255,255,.3)';
-        b.classList.remove('active-ev');
+        b.classList.remove('border-accent','bg-accent','text-white');
+        b.classList.add('border-border','text-ink-muted');
     });
-    btn.style.background = 'rgba(255,255,255,.25)';
-    btn.style.borderColor = 'rgba(255,255,255,.6)';
-    btn.classList.add('active-ev');
-
-    // Filtrer sections
+    btn.classList.remove('border-border','text-ink-muted');
+    btn.classList.add('border-accent','bg-accent','text-white');
     document.querySelectorAll('.ev-section').forEach(function(s){
         s.style.display = (cat==='all' || s.dataset.cat===cat) ? '' : 'none';
     });
 }
-</script>
 
+// ── Palette par catégorie (identique à la grille ci-dessus) ──
+var EV_META = {
+    sport:       { icon:'trophy',    chip:'bg-blue-100 dark:bg-blue-500/15',     ink:'text-blue-600 dark:text-blue-400' },
+    cinema:      { icon:'film',      chip:'bg-purple-100 dark:bg-purple-500/15', ink:'text-purple-600 dark:text-purple-400' },
+    news:        { icon:'newspaper', chip:'bg-red-100 dark:bg-red-500/15',       ink:'text-red-600 dark:text-red-400' },
+    kids:        { icon:'baby',      chip:'bg-yellow-100 dark:bg-yellow-500/15', ink:'text-yellow-600 dark:text-yellow-500' },
+    documentary: { icon:'film',      chip:'bg-amber-100 dark:bg-amber-500/15',   ink:'text-amber-600 dark:text-amber-400' },
+    music:       { icon:'music-2',   chip:'bg-pink-100 dark:bg-pink-500/15',     ink:'text-pink-600 dark:text-pink-400' },
+    other:       { icon:'tv',        chip:'bg-indigo-100 dark:bg-indigo-500/15', ink:'text-indigo-600 dark:text-indigo-400' }
+};
 
-<!-- ── COUNTDOWN SECTION ── -->
-{% if events.get('sport') or events.get('cinema') %}
-<section style="margin-top:16px;">
-    <h2 style="font-size:1.1rem;font-weight:800;margin:0 0 16px;display:flex;align-items:center;gap:8px;">
-        <span style="width:28px;height:28px;background:#fee2e2;border-radius:8px;display:flex;align-items:center;justify-content:center;"></span>
-        Prochainement — Dans moins d'une heure
-    </h2>
-    <div id="upcoming-soon" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;">
-        <!-- Chargé dynamiquement via JS -->
-    </div>
-    <div id="upcoming-empty" style="display:none;text-align:center;padding:24px;color:#9ca3af;font-size:13px;">
-        Aucun événement prévu dans la prochaine heure.
-    </div>
-</section>
-{% endif %}
-
-<!-- ── CALENDRIER SEMAINE ── -->
-<section style="margin-top:16px;padding-top:32px;border-top:1px solid #e5e7eb;">
-    <h2 style="font-size:1.1rem;font-weight:800;margin:0 0 16px;display:flex;align-items:center;gap:8px;">
-        <span style="width:28px;height:28px;background:#e0e7ff;border-radius:8px;display:flex;align-items:center;justify-content:center;"></span>
-        Cette semaine
-    </h2>
-    <div style="display:flex;overflow-x:auto;gap:8px;padding-bottom:8px;" class="custom-scroll" id="week-nav">
-        <!-- Généré par JS -->
-    </div>
-    <div id="week-content" style="margin-top:12px;min-height:60px;">
-        <p style="color:#9ca3af;font-size:13px;text-align:center;padding:20px;">Sélectionnez un jour</p>
-    </div>
-</section>
-
-<script>
-// ── Countdown pour les prochains événements ──────────────────────────
+// ── Countdown pour les prochains événements ──
 function _pad(n){return String(n).padStart(2,'0');}
 
 function _countdown(target){
@@ -12893,7 +13458,19 @@ function _countdown(target){
     return _pad(m)+'m '+_pad(s)+'s';
 }
 
-// ── Prochains événements (<1h) ────────────────────────────────────────
+function _evRow(ev, rightHtml) {
+    var cat = ev._cat || 'other';
+    var m = EV_META[cat] || EV_META.other;
+    return '<div class="card flex items-center gap-4 p-4">'
+        + '<div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ' + m.chip + '"><span class="' + m.ink + '">' + lwIcon(m.icon, 19) + '</span></div>'
+        + '<div class="min-w-0 flex-1"><p class="truncate font-medium">' + ev.title + '</p>'
+        + '<p class="text-xs text-ink-muted">' + [ev.channel_name, ev.country].filter(Boolean).join(' · ') + '</p></div>'
+        + '<div class="flex shrink-0 flex-col items-end gap-1.5 text-xs text-ink-muted">' + rightHtml
+        + (ev.stream_url ? '<a href="' + ev.stream_url + '" target="_blank" rel="noopener" class="rounded-full bg-accent px-3 py-1 text-[11px] font-semibold text-white hover:opacity-90">Regarder</a>' : '')
+        + '</div></div>';
+}
+
+// ── Prochains événements (<1h) ──
 async function loadUpcomingSoon(){
     var container=document.getElementById('upcoming-soon');
     var emptyEl=document.getElementById('upcoming-empty');
@@ -12901,7 +13478,7 @@ async function loadUpcomingSoon(){
 
     try{
         var r=await fetch('/api/events/upcoming?limit=6',{credentials:'include'});
-        if(!r.ok){if(emptyEl)emptyEl.style.display='block';return;}
+        if(!r.ok){if(emptyEl)emptyEl.classList.remove('hidden');return;}
         var data=await r.json();
 
         var allEvents=[];
@@ -12920,34 +13497,15 @@ async function loadUpcomingSoon(){
         });
 
         if(!soonEvents.length){
-            if(emptyEl)emptyEl.style.display='block';
+            if(emptyEl)emptyEl.classList.remove('hidden');
             return;
         }
 
-        var catIcons={sport:'',cinema:'',news:'',kids:'',documentary:'',music:'',other:''};
-        var catColors={sport:'#16a34a',cinema:'#7c3aed',news:'#2563eb',kids:'#f59e0b',documentary:'#0891b2',music:'#dc2626',other:'#6b7280'};
-
         container.innerHTML=soonEvents.map(function(ev){
-            var startT=new Date(ev.start_time);
-            var startStr=startT.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
-            var cat=ev._cat||'other';
-            var col=catColors[cat]||'#6b7280';
-            var icon=catIcons[cat]||'';
-            return '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;position:relative;">'
-                +'<div style="height:3px;background:'+col+';"></div>'
-                +'<div style="padding:14px;">'
-                +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">'
-                +'<span style="font-size:1.1rem;">'+icon+'</span>'
-                +'<span id="cd-'+ev.id+'" style="font-size:11px;font-weight:800;background:#fee2e2;color:#dc2626;padding:3px 8px;border-radius:99px;">'+_countdown(ev.start_time)+'</span>'
-                +'</div>'
-                +'<div style="font-size:13px;font-weight:800;margin-bottom:4px;line-height:1.3;">'+ev.title+'</div>'
-                +(ev.channel_name?'<div style="font-size:11px;color:#9ca3af;">'+ev.channel_name+'</div>':'')
-                +'<div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;">'
-                +'<span style="font-size:12px;font-weight:700;color:'+col+';">'+startStr+'</span>'
-                +(ev.stream_url?'<a href="'+ev.stream_url+'" target="_blank" style="font-size:11px;background:'+col+';color:#fff;padding:4px 10px;border-radius:8px;text-decoration:none;font-weight:700;">Regarder</a>':'')
-                +'</div>'
-                +'</div>'
-                +'</div>';
+            var startStr=new Date(ev.start_time).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
+            return _evRow(ev,
+                '<span class="flex items-center gap-1">' + lwIcon('clock', 12) + ' ' + startStr + '</span>'
+                + '<span class="font-display tabular-nums text-sm font-semibold text-accent" id="cd-'+ev.id+'">'+_countdown(ev.start_time)+'</span>');
         }).join('');
 
         // Mettre à jour les countdowns toutes les secondes
@@ -12959,11 +13517,11 @@ async function loadUpcomingSoon(){
         },1000);
 
     }catch(e){
-        if(emptyEl) emptyEl.style.display='block';
+        if(emptyEl) emptyEl.classList.remove('hidden');
     }
 }
 
-// ── Calendrier semaine ─────────────────────────────────────────────────
+// ── Calendrier semaine ──
 var _selectedDay=null;
 
 function buildWeekNav(){
@@ -12977,35 +13535,31 @@ function buildWeekNav(){
 
     for(var i=0;i<7;i++){
         var d=new Date(now.getFullYear(),now.getMonth(),now.getDate()+i);
-        var isToday=(i===0);
         var dateStr=d.toISOString().slice(0,10);
-        var dayName=days[d.getDay()];
-        var dayNum=d.getDate();
-        var monthName=months[d.getMonth()];
-
-        html+='<button onclick="loadWeekDay(\''+dateStr+'\',this)"'
-            +' style="flex-shrink:0;padding:10px 16px;border-radius:12px;border:none;cursor:pointer;text-align:center;min-width:70px;'
-            +(isToday?'background:#dc2626;color:#fff;':'background:#f3f4f6;color:inherit;')
-            +'">'
-            +'<div style="font-size:11px;font-weight:700;'+(isToday?'color:rgba(255,255,255,.8);':'color:#9ca3af;')+'">'+dayName+'</div>'
-            +'<div style="font-size:1.2rem;font-weight:900;margin:2px 0;">'+dayNum+'</div>'
-            +'<div style="font-size:10px;'+(isToday?'color:rgba(255,255,255,.7);':'color:#9ca3af;')+'">'+monthName+'</div>'
+        html+='<button type="button" onclick="loadWeekDay(\''+dateStr+'\',this)" '
+            +'class="wk-btn flex w-16 shrink-0 flex-col items-center gap-0.5 rounded-xl border border-border bg-surface px-2 py-2.5 text-ink-muted transition-colors hover:text-ink">'
+            +'<span class="text-[11px] font-medium">'+days[d.getDay()]+'</span>'
+            +'<span class="font-display text-lg font-semibold leading-none">'+d.getDate()+'</span>'
+            +'<span class="text-[10px]">'+months[d.getMonth()]+'</span>'
             +'</button>';
     }
     nav.innerHTML=html;
 }
 
 async function loadWeekDay(dateStr,btn){
-    // Styling boutons
-    document.querySelectorAll('#week-nav button').forEach(function(b){
-        b.style.background='#f3f4f6'; b.style.color='inherit';
+    document.querySelectorAll('#week-nav .wk-btn').forEach(function(b){
+        b.classList.remove('border-accent','bg-accent','text-white');
+        b.classList.add('border-border','bg-surface','text-ink-muted');
     });
-    if(btn){btn.style.background='#dc2626';btn.style.color='#fff';}
+    if(btn){
+        btn.classList.remove('border-border','bg-surface','text-ink-muted');
+        btn.classList.add('border-accent','bg-accent','text-white');
+    }
 
     _selectedDay=dateStr;
     var content=document.getElementById('week-content');
     if(!content) return;
-    content.innerHTML='<p style="color:#9ca3af;font-size:13px;text-align:center;padding:20px;">Chargement...</p>';
+    content.innerHTML='<p class="card p-6 text-center text-sm text-ink-muted">Chargement...</p>';
 
     try{
         var r=await fetch('/api/events/upcoming?limit=50',{credentials:'include'});
@@ -13015,74 +13569,43 @@ async function loadWeekDay(dateStr,btn){
             if(Array.isArray(data[cat])) data[cat].forEach(function(ev){ev._cat=cat;allEvents.push(ev);});
         });
 
-        // Filtrer par jour
         var dayEvents=allEvents.filter(function(ev){
             if(!ev.start_time) return false;
             return ev.start_time.slice(0,10)===dateStr;
         });
 
         if(!dayEvents.length){
-            content.innerHTML='<p style="color:#9ca3af;font-size:13px;text-align:center;padding:24px;">Aucun programme pour ce jour.</p>';
+            content.innerHTML='<p class="card p-6 text-center text-sm text-ink-muted">Aucun programme pour ce jour.</p>';
             return;
         }
 
         dayEvents.sort(function(a,b){return new Date(a.start_time)-new Date(b.start_time);});
 
-        var catColors={sport:'#16a34a',cinema:'#7c3aed',news:'#2563eb',kids:'#f59e0b',documentary:'#0891b2',music:'#dc2626',other:'#6b7280'};
-        var catIcons={sport:'',cinema:'',news:'',kids:'',documentary:'',music:'',other:''};
-
-        content.innerHTML='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px;">'
+        content.innerHTML='<div class="space-y-3">'
             +dayEvents.map(function(ev){
-                var cat=ev._cat||'other';
-                var col=catColors[cat]||'#6b7280';
-                var icon=catIcons[cat]||'';
                 var t=ev.start_time?new Date(ev.start_time).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}):'';
-                return '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">'
-                    +'<div style="height:3px;background:'+col+';"></div>'
-                    +'<div style="padding:12px;">'
-                    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">'
-                    +'<span>'+icon+'</span>'
-                    +'<span style="font-size:11px;color:#9ca3af;">'+t+'</span>'
-                    +'</div>'
-                    +'<div style="font-size:13px;font-weight:700;line-height:1.3;margin-bottom:4px;">'+ev.title+'</div>'
-                    +(ev.channel_name?'<div style="font-size:11px;color:#9ca3af;">'+ev.channel_name+'</div>':'')
-                    +(ev.country?'<div style="font-size:10px;color:#9ca3af;margin-top:4px;">'+ev.country+'</div>':'')
-                    +(ev.stream_url?'<a href="'+ev.stream_url+'" target="_blank" style="display:inline-block;margin-top:8px;font-size:11px;background:'+col+';color:#fff;padding:4px 10px;border-radius:8px;text-decoration:none;font-weight:700;">Regarder</a>':'')
-                    +'</div>'
-                    +'</div>';
+                return _evRow(ev, '<span class="flex items-center gap-1">' + lwIcon('clock', 12) + ' ' + t + '</span>');
             }).join('')
             +'</div>';
 
     }catch(e){
-        content.innerHTML='<p style="color:#dc2626;font-size:13px;text-align:center;padding:16px;">Erreur de chargement.</p>';
+        content.innerHTML='<p class="card p-6 text-center text-sm text-ink-muted">Erreur de chargement.</p>';
     }
 }
 
-// ── Dark mode pour les cards ──────────────────────────────────────────
-function _applyDarkToEventCards(){
-    var isDark=document.documentElement.classList.contains('dark');
-    document.querySelectorAll('.ev-card').forEach(function(c){
-        c.style.background=isDark?'#1f2937':'#fff';
-        c.style.borderColor=isDark?'#374151':'#e5e7eb';
-        c.style.color=isDark?'#f9fafb':'#111827';
-    });
-}
-
-// ── Init ──────────────────────────────────────────────────────────────
+// ── Init ──
 document.addEventListener('DOMContentLoaded',function(){
     loadUpcomingSoon();
     buildWeekNav();
-    // Sélectionner aujourd'hui par défaut
-    var todayBtn=document.querySelector('#week-nav button');
+    var todayBtn=document.querySelector('#week-nav .wk-btn');
     if(todayBtn){
         var today=new Date().toISOString().slice(0,10);
         loadWeekDay(today,todayBtn);
     }
-    _applyDarkToEventCards();
 });
 </script>
-
-{% endblock %}'''
+{% endblock %}
+'''
 
     # ══════════════════════════════════════════════════════════════════
     # SEARCH TEMPLATE
@@ -13090,57 +13613,51 @@ document.addEventListener('DOMContentLoaded',function(){
     SEARCH_TEMPLATE = r'''{% extends "base.html" %}
 {% block title %}Recherche{% if query %} : {{ query }}{% endif %} - {{ app_name }}{% endblock %}
 {% block content %}
-<div style="max-width:960px;margin:0 auto;">
-    <h1 style="font-size:1.6rem;font-weight:900;margin:0 0 20px;">Recherche</h1>
+{% from 'icons.html' import icon %}
+{% from 'components.html' import stream_card, cat_meta %}
+<div class="mx-auto max-w-6xl">
+    <h1 class="mb-5 font-display text-2xl font-semibold">Rechercher</h1>
 
     <!-- Barre de recherche -->
-    <form method="GET" action="/search" style="margin-bottom:32px;">
-        <div style="display:flex;gap:10px;">
-            <input type="text" name="q" value="{{ query or '' }}" autofocus
-                   placeholder="Rechercher une chaîne, un live, une catégorie..."
-                   style="flex:1;border:2px solid #e5e7eb;border-radius:14px;padding:13px 20px;font-size:15px;outline:none;background:inherit;color:inherit;transition:border .15s;"
-                   onfocus="this.style.borderColor='#dc2626'" onblur="this.style.borderColor='#e5e7eb'">
-            <button type="submit"
-                style="background:#dc2626;color:#fff;border:none;padding:13px 24px;border-radius:14px;font-size:15px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:8px;white-space:nowrap;">
-                <i class="fas fa-search"></i> Chercher
-            </button>
-        </div>
+    <form method="GET" action="/search" class="relative mb-7 max-w-lg">
+        {{ icon('search', 17, 'pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-ink-muted') }}
+        <input type="text" name="q" value="{{ query or '' }}" autofocus placeholder="Chaîne, sport, pays…"
+               class="w-full rounded-full border border-border bg-surface py-3 pl-11 pr-4 text-sm outline-none placeholder:text-ink-muted focus-visible:border-accent-2">
     </form>
 
     {% if query %}
     {% set total = external_results|length + iptv_results|length + user_results|length %}
-    <p style="font-size:14px;color:#6b7280;margin-bottom:24px;">
-        <strong>{{ total }}</strong> résultat{% if total > 1 %}s{% endif %} pour « <strong>{{ query }}</strong> »
-    </p>
+    <div class="mb-4 flex items-center justify-between">
+        <h2 class="font-display text-lg font-semibold">{{ total }} résultat{% if total > 1 %}s{% endif %} pour « {{ query }} »</h2>
+    </div>
 
     {% if total == 0 %}
-    <div style="text-align:center;padding:48px 20px;">
-        <div style="font-size:3.5rem;margin-bottom:16px;"></div>
-        <h2 style="font-size:1.2rem;font-weight:700;margin:0 0 8px;">Aucun résultat trouvé</h2>
-        <p style="color:#6b7280;font-size:14px;margin:0 0 20px;">Essayez avec d'autres mots-clés</p>
-        <a href="/" style="background:#dc2626;color:#fff;padding:10px 22px;border-radius:10px;text-decoration:none;font-weight:700;">Accueil</a>
+    <div class="card mt-4 flex flex-col items-center gap-2 p-10 text-center text-ink-muted">
+        <p class="font-medium text-ink">Aucun résultat pour « {{ query }} »</p>
+        <p class="text-sm">Essayez un autre mot-clé, ou parcourez les catégories depuis l'accueil.</p>
+        <a href="/" class="mt-2 text-sm font-medium text-accent-2 hover:underline">← Accueil</a>
     </div>
     {% endif %}
 
     <!-- Lives -->
     {% if user_results %}
-    <section style="margin-bottom:32px;">
-        <h2 style="font-size:1rem;font-weight:800;margin:0 0 14px;display:flex;align-items:center;gap:8px;">
-            <span style="width:24px;height:24px;background:#fee2e2;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:11px;"></span>
-            Lives en direct ({{ user_results|length }})
-        </h2>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;">
+    <section class="mb-8">
+        <p class="mb-3 text-sm font-medium text-ink-muted">Lives en direct ({{ user_results|length }})</p>
+        <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
             {% for s in user_results %}
-            <a href="/watch/user/{{ s.id }}" class="stream-card" style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;text-decoration:none;color:inherit;display:flex;flex-direction:column;">
-                <style>html.dark a.stream-card{background:#1f2937;border-color:#374151;}</style>
-                <div style="height:120px;background:#1f2937;position:relative;display:flex;align-items:center;justify-content:center;">
-                    {% if s.thumbnail %}<img src="{{ s.thumbnail }}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;">{% endif %}
-                    <div style="position:absolute;top:6px;left:6px;background:#dc2626;color:#fff;font-size:10px;font-weight:800;padding:2px 7px;border-radius:99px;" class="live-badge">LIVE</div>
-                    {% if not s.thumbnail %}<i class="fas fa-video" style="font-size:2rem;color:rgba(255,255,255,.2);"></i>{% endif %}
+            {%- set sm = cat_meta.get(s.category, cat_meta['entertainment']) -%}
+            <a href="/watch/user/{{ s.id }}" class="card group flex flex-col overflow-hidden transition-transform hover:-translate-y-0.5 stream-card">
+                <div class="relative flex aspect-video w-full items-center justify-center overflow-hidden {{ sm[1] }}">
+                    <span class="{{ sm[2] }}">{{ icon('video', 30, '', 1.75) }}</span>
+                    {% if s.thumbnail %}<img src="{{ s.thumbnail }}" alt="" loading="lazy" onerror="this.style.display='none'" class="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-105">{% endif %}
+                    <div class="absolute left-2.5 top-2.5"><span class="inline-flex items-center gap-1.5 rounded-full bg-accent px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white"><span class="live-dot bg-white"></span>DIRECT</span></div>
                 </div>
-                <div style="padding:10px;">
-                    <div style="font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:3px;">{{ s.title }}</div>
-                    <div style="font-size:11px;color:#9ca3af;">{{ s.category }}</div>
+                <div class="flex items-start gap-2.5 p-3.5">
+                    <div class="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg {{ sm[1] }}"><span class="{{ sm[2] }}">{{ icon(sm[0], 14) }}</span></div>
+                    <div class="min-w-0">
+                        <p class="truncate text-sm font-semibold leading-snug">{{ s.title }}</p>
+                        <p class="truncate text-xs text-ink-muted">{{ sm[3] if s.category in cat_meta else s.category }}</p>
+                    </div>
                 </div>
             </a>
             {% endfor %}
@@ -13150,23 +13667,11 @@ document.addEventListener('DOMContentLoaded',function(){
 
     <!-- Flux externes -->
     {% if external_results %}
-    <section style="margin-bottom:32px;">
-        <h2 style="font-size:1rem;font-weight:800;margin:0 0 14px;display:flex;align-items:center;gap:8px;">
-            <span style="width:24px;height:24px;background:#dbeafe;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:11px;"></span>
-            Chaînes & Médias ({{ external_results|length }})
-        </h2>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">
+    <section class="mb-8">
+        <p class="mb-3 text-sm font-medium text-ink-muted">Chaînes &amp; Médias ({{ external_results|length }})</p>
+        <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
             {% for s in external_results %}
-            <a href="/watch/external/{{ s.id }}" class="stream-card" style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;text-decoration:none;color:inherit;display:flex;flex-direction:column;">
-                <div style="height:90px;background:#f3f4f6;display:flex;align-items:center;justify-content:center;">
-                    {% if s.logo %}<img src="{{ s.logo }}" style="max-width:100%;max-height:75px;object-fit:contain;padding:8px;" loading="lazy" onerror="this.style.display='none'">
-                    {% else %}<i class="fas fa-tv" style="font-size:1.8rem;color:#d1d5db;"></i>{% endif %}
-                </div>
-                <div style="padding:8px 10px;">
-                    <div style="font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:2px;">{{ s.title }}</div>
-                    <div style="font-size:11px;color:#9ca3af;">{{ s.country or s.category }}</div>
-                </div>
-            </a>
+            {{ stream_card('/watch/external/' ~ s.id, s.title, s.logo, (s.category if s.category in cat_meta else 'iptv'), (cat_meta.get(s.category, cat_meta['iptv'])[3] ~ ((' · ' ~ s.country) if s.country else '')), none, none, none, s.stream_type) }}
             {% endfor %}
         </div>
     </section>
@@ -13174,24 +13679,11 @@ document.addEventListener('DOMContentLoaded',function(){
 
     <!-- IPTV -->
     {% if iptv_results %}
-    <section style="margin-bottom:32px;">
-        <h2 style="font-size:1rem;font-weight:800;margin:0 0 14px;display:flex;align-items:center;gap:8px;">
-            <span style="width:24px;height:24px;background:#dcfce7;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:11px;"></span>
-            Chaînes TV mondiales ({{ iptv_results|length }})
-        </h2>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">
+    <section class="mb-8">
+        <p class="mb-3 text-sm font-medium text-ink-muted">Chaînes TV mondiales ({{ iptv_results|length }})</p>
+        <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
             {% for ch in iptv_results %}
-            <a href="/watch/iptv/{{ ch.id }}" class="stream-card" style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;text-decoration:none;color:inherit;display:flex;flex-direction:column;">
-                <div style="height:90px;background:#f3f4f6;position:relative;display:flex;align-items:center;justify-content:center;">
-                    {% if ch.logo %}<img src="{{ ch.logo }}" style="max-width:100%;max-height:75px;object-fit:contain;padding:8px;" loading="lazy" onerror="this.style.display='none'">
-                    {% else %}<i class="fas fa-tv" style="font-size:1.8rem;color:#d1d5db;"></i>{% endif %}
-                    <div style="position:absolute;top:4px;left:4px;background:#dc2626;color:#fff;font-size:9px;font-weight:800;padding:2px 5px;border-radius:99px;" class="live-badge">LIVE</div>
-                </div>
-                <div style="padding:8px 10px;">
-                    <div style="font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:2px;">{{ ch.name }}</div>
-                    <div style="font-size:11px;color:#9ca3af;">{{ ch.country }}</div>
-                </div>
-            </a>
+            {{ stream_card('/watch/iptv/' ~ ch.id, ch.name, ch.logo, (ch.category if ch.category in cat_meta else 'iptv'), (cat_meta.get(ch.category, cat_meta['iptv'])[3] ~ ((' · ' ~ ch.country) if ch.country else ''))) }}
             {% endfor %}
         </div>
     </section>
@@ -13199,67 +13691,50 @@ document.addEventListener('DOMContentLoaded',function(){
 
     {% else %}
     <!-- Page par défaut sans query -->
-    <div style="text-align:center;padding:32px 20px;color:#9ca3af;">
-        <i class="fas fa-search" style="font-size:3rem;margin-bottom:16px;opacity:.4;"></i>
-        <p style="font-size:15px;">Tapez un mot-clé pour rechercher une chaîne, un live ou un programme</p>
+    <div class="card flex flex-col items-center gap-3 p-10 text-center text-ink-muted">
+        <span class="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent-2-soft text-accent-2">{{ icon('search', 22) }}</span>
+        <p class="text-sm">Tapez un mot-clé pour rechercher une chaîne, un live ou un programme</p>
     </div>
     {% endif %}
 </div>
-{% endblock %}'''
+{% endblock %}
+'''
 
     # ══════════════════════════════════════════════════════════════════
     # ADMIN LOGIN TEMPLATE
     # ══════════════════════════════════════════════════════════════════
-    ADMIN_LOGIN_TEMPLATE = r'''<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Administration - {{ app_name }}</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
-    <style>
-        *{box-sizing:border-box;margin:0;padding:0}
-        body{font-family:system-ui,-apple-system,sans-serif;min-height:100vh;background:linear-gradient(135deg,#0f172a 0%,#1e1b4b 50%,#0f172a 100%);display:flex;align-items:center;justify-content:center;padding:20px}
-        .box{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);border-radius:24px;padding:40px;width:100%;max-width:400px;backdrop-filter:blur(20px);}
-        .logo{width:64px;height:64px;background:linear-gradient(135deg,#dc2626,#f97316);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 24px;}
-        h1{text-align:center;color:#fff;font-size:1.5rem;font-weight:900;margin-bottom:6px;}
-        .sub{text-align:center;color:#94a3b8;font-size:13px;margin-bottom:28px;}
-        label{display:block;color:#94a3b8;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;}
-        input{width:100%;border:1px solid rgba(255,255,255,.15);border-radius:10px;padding:12px 16px;font-size:14px;background:rgba(255,255,255,.08);color:#fff;outline:none;transition:border .15s;margin-bottom:16px;}
-        input:focus{border-color:#dc2626;}
-        input::placeholder{color:#64748b;}
-        .error{background:#450a0a;border:1px solid #dc2626;color:#fca5a5;padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:16px;}
-        button{width:100%;background:linear-gradient(135deg,#dc2626,#b91c1c);color:#fff;border:none;padding:13px;border-radius:12px;font-size:15px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:opacity .2s;}
-        button:hover{opacity:.9;}
-        .back{display:block;text-align:center;color:#64748b;font-size:13px;margin-top:16px;text-decoration:none;transition:color .15s;}
-        .back:hover{color:#94a3b8;}
-    </style>
-</head>
-<body>
-<div class="box">
-    <div class="logo"><i class="fas fa-shield-alt" style="color:#fff;font-size:1.6rem;"></i></div>
-    <h1>Administration</h1>
-    <p class="sub">{{ app_name }} — Accès restreint</p>
+    ADMIN_LOGIN_TEMPLATE = r'''{% extends "base.html" %}
+{% block title %}Administration - {{ app_name }}{% endblock %}
+{% block content %}
+{% from 'icons.html' import icon %}
+<div class="mx-auto flex min-h-[70vh] max-w-sm flex-col justify-center">
+    <div class="card p-7">
+        <div class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-accent-2-soft text-accent-2">{{ icon('shield-check', 22) }}</div>
+        <h1 class="mb-1 text-center font-display text-xl font-semibold">Espace admin</h1>
+        <p class="mb-6 text-center text-sm text-ink-muted">{{ app_name }} — Connectez-vous pour accéder au tableau de bord.</p>
 
-    {% if error %}
-    <div class="error"><i class="fas fa-exclamation-triangle"></i> {{ error }}</div>
-    {% endif %}
+        {% if error %}
+        <div class="mb-4 flex items-center gap-2 rounded-xl border border-accent/30 bg-accent/10 px-3.5 py-2.5 text-sm text-accent">{{ icon('triangle-alert', 16) }} {{ error }}</div>
+        {% endif %}
 
-    <form method="POST" action="/admin/login">
-        <div>
-            <label for="username">Nom d'utilisateur</label>
-            <input type="text" id="username" name="username" autocomplete="username" required placeholder="Identifiant admin">
-        </div>
-        <div>
-            <label for="password">Mot de passe</label>
-            <input type="password" id="password" name="password" autocomplete="current-password" required placeholder="••••••••">
-        </div>
-        <button type="submit"><i class="fas fa-sign-in-alt"></i> Se connecter</button>
-    </form>
-    <a href="/" class="back">← Retour au site</a>
+        <form method="POST" action="/admin/login" class="space-y-4">
+            <div>
+                <label for="username" class="mb-1.5 block text-sm font-medium">Identifiant ou email</label>
+                <input type="text" id="username" name="username" autocomplete="username" required autofocus placeholder="Identifiant admin"
+                       class="w-full rounded-xl border border-border bg-surface px-3.5 py-2.5 text-sm outline-none placeholder:text-ink-muted focus-visible:border-accent-2">
+            </div>
+            <div>
+                <label for="password" class="mb-1.5 block text-sm font-medium">Mot de passe</label>
+                <input type="password" id="password" name="password" autocomplete="current-password" required placeholder="••••••••"
+                       class="w-full rounded-xl border border-border bg-surface px-3.5 py-2.5 text-sm outline-none placeholder:text-ink-muted focus-visible:border-accent-2">
+            </div>
+            <button type="submit" class="flex w-full items-center justify-center gap-2 rounded-xl bg-accent-2 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90">{{ icon('log-in', 16) }} Se connecter</button>
+        </form>
+        <a href="/" class="mt-4 block text-center text-sm text-ink-muted hover:text-ink">← Retour au site</a>
+    </div>
 </div>
-</body>
-</html>'''
+{% endblock %}
+'''
 
     # ══════════════════════════════════════════════════════════════════
     # BLOCKED / ERROR / PLAYLIST TEMPLATES
@@ -13267,73 +13742,79 @@ document.addEventListener('DOMContentLoaded',function(){
     BLOCKED_TEMPLATE = r'''{% extends "base.html" %}
 {% block title %}Accès bloqué - {{ app_name }}{% endblock %}
 {% block content %}
-<div style="min-height:60vh;display:flex;align-items:center;justify-content:center;">
-    <div style="text-align:center;max-width:480px;padding:20px;">
-        <div style="font-size:5rem;margin-bottom:20px;"></div>
-        <h1 style="font-size:1.8rem;font-weight:900;color:#dc2626;margin-bottom:12px;">Accès bloqué</h1>
-        <p style="color:#6b7280;font-size:14px;line-height:1.7;margin-bottom:8px;">Votre adresse IP a été bloquée de cette plateforme.</p>
-        <p style="color:#6b7280;font-size:13px;">Si vous pensez qu'il s'agit d'une erreur, contactez l'administrateur.</p>
-    </div>
+{% from 'icons.html' import icon %}
+<div class="mx-auto flex max-w-md flex-col items-center gap-4 py-20 text-center">
+    <div class="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent/10 text-accent">{{ icon('ban', 26) }}</div>
+    <h1 class="font-display text-xl font-semibold">Accès bloqué</h1>
+    <p class="text-sm text-ink-muted">Votre adresse IP a été bloquée de cette plateforme.</p>
+    <p class="text-sm text-ink-muted">Si vous pensez qu'il s'agit d'une erreur, contactez l'administrateur.</p>
 </div>
-{% endblock %}'''
+{% endblock %}
+'''
 
     ERROR_TEMPLATE = r'''{% extends "base.html" %}
 {% block title %}Erreur {{ code }} - {{ app_name }}{% endblock %}
 {% block content %}
-<div style="min-height:60vh;display:flex;align-items:center;justify-content:center;">
-    <div style="text-align:center;max-width:480px;padding:20px;">
-        <div style="font-size:5rem;font-weight:900;color:#e5e7eb;margin-bottom:12px;">{{ code }}</div>
-        <h1 style="font-size:1.6rem;font-weight:900;margin-bottom:10px;">{{ message }}</h1>
-        <p style="color:#6b7280;font-size:14px;margin-bottom:24px;">{{ detail or 'La page que vous cherchez est introuvable ou une erreur est survenue.' }}</p>
-        <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
-            <a href="/" style="background:#dc2626;color:#fff;padding:11px 22px;border-radius:12px;text-decoration:none;font-weight:700;font-size:14px;">Accueil</a>
-            <button onclick="history.back()" style="background:#f3f4f6;border:1px solid #e5e7eb;padding:11px 22px;border-radius:12px;font-weight:700;font-size:14px;cursor:pointer;color:inherit;">← Retour</button>
-        </div>
+{% from 'icons.html' import icon %}
+<div class="mx-auto flex max-w-md flex-col items-center gap-4 py-20 text-center">
+    <p class="font-display text-6xl font-semibold text-ink-muted">{{ code }}</p>
+    <h1 class="font-display text-xl font-semibold">{{ message }}</h1>
+    <p class="text-sm text-ink-muted">{{ detail or 'La page que vous cherchez est introuvable ou une erreur est survenue.' }}</p>
+    <div class="mt-2 flex flex-wrap items-center justify-center gap-2.5">
+        <a href="/" class="flex items-center gap-2 rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white">{{ icon('house', 15) }} Accueil</a>
+        <button type="button" onclick="history.back()" class="rounded-full border border-border px-5 py-2.5 text-sm font-semibold text-ink-muted hover:text-ink">← Retour</button>
     </div>
 </div>
-{% endblock %}'''
+{% endblock %}
+'''
 
     PLAYLIST_TEMPLATE = r'''{% extends "base.html" %}
 {% block title %}{{ playlist.display_name }} - {{ app_name }}{% endblock %}
 {% block content %}
-<div style="max-width:1200px;margin:0 auto;">
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:24px;">
-        <a href="/" style="color:#dc2626;text-decoration:none;font-size:20px;font-weight:800;">←</a>
-        {% if playlist.country %}<img src="https://flagcdn.com/w40/{{ playlist.country|lower }}.png" style="width:36px;height:24px;object-fit:cover;border-radius:4px;" onerror="this.style.display='none'">{% endif %}
-        <h1 style="font-size:1.4rem;font-weight:900;margin:0;">{{ playlist.display_name }}</h1>
-        <span style="font-size:13px;color:#9ca3af;font-weight:400;">{{ channels|length }} chaînes</span>
+{% from 'icons.html' import icon %}
+<div class="mx-auto max-w-6xl">
+    <div class="mb-6 flex flex-wrap items-center gap-3">
+        <a href="/" aria-label="Retour" class="flex h-9 w-9 items-center justify-center rounded-lg text-ink-muted hover:bg-surface-2 hover:text-ink">{{ icon('arrow-left', 18) }}</a>
+        {% if playlist.country %}<img src="https://flagcdn.com/w40/{{ playlist.country|lower }}.png" alt="" class="h-5 w-7 rounded object-cover" onerror="this.style.display='none'">{% endif %}
+        <div>
+            <h1 class="font-display text-2xl font-semibold sm:text-3xl">{{ playlist.display_name }}</h1>
+            <p class="mt-0.5 text-sm text-ink-muted">{{ channels|length }} chaîne{{ 's' if channels|length > 1 else '' }} en direct</p>
+        </div>
     </div>
 
     {% if channels %}
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;">
+    <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
         {% for ch in channels %}
-        <a href="/watch/iptv/{{ ch.id }}" class="stream-card" style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;text-decoration:none;color:inherit;display:flex;flex-direction:column;">
-            <style>html.dark a.stream-card{background:#1f2937;border-color:#374151;}</style>
-            <div style="height:90px;background:#f3f4f6;position:relative;display:flex;align-items:center;justify-content:center;">
-                {% if ch.logo %}<img src="{{ ch.logo }}" style="max-width:100%;max-height:74px;object-fit:contain;padding:8px;" loading="lazy" onerror="this.style.display='none'">
-                {% else %}<i class="fas fa-tv" style="font-size:1.8rem;color:#d1d5db;"></i>{% endif %}
-                <div style="position:absolute;top:4px;left:4px;background:#dc2626;color:#fff;font-size:9px;font-weight:800;padding:2px 5px;border-radius:99px;" class="live-badge">LIVE</div>
+        <a href="/watch/iptv/{{ ch.id }}" class="card group flex flex-col overflow-hidden transition-transform hover:-translate-y-0.5 stream-card">
+            <div class="relative flex aspect-video w-full items-center justify-center overflow-hidden bg-indigo-100 dark:bg-indigo-500/15">
+                <span class="text-indigo-600 dark:text-indigo-400">{{ icon('tv', 30, '', 1.75) }}</span>
+                {% if ch.logo %}
+                <div class="absolute inset-0 flex items-center justify-center bg-surface-2"><img src="{{ ch.logo }}" alt="" loading="lazy" onerror="var p=this.parentNode;p.parentNode.removeChild(p)" class="h-full w-full object-contain p-4 transition-transform duration-300 group-hover:scale-105"></div>
+                {% endif %}
+                <div class="absolute left-2.5 top-2.5"><span class="inline-flex items-center gap-1.5 rounded-full bg-accent px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white"><span class="live-dot bg-white"></span>DIRECT</span></div>
             </div>
-            <div style="padding:8px 10px;">
-                <div style="font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:2px;">{{ ch.name }}</div>
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-top:3px;">
-                    <span style="font-size:11px;color:#9ca3af;">{{ ch.category or '—' }}</span>
-                    <button onclick="addToFavorites('{{ ch.id }}','iptv',event)" style="background:none;border:none;cursor:pointer;font-size:12px;padding:2px;"></button>
+            <div class="flex items-start gap-2.5 p-3.5">
+                <div class="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-indigo-100 dark:bg-indigo-500/15"><span class="text-indigo-600 dark:text-indigo-400">{{ icon('tv', 14) }}</span></div>
+                <div class="min-w-0 flex-1">
+                    <p class="truncate text-sm font-semibold leading-snug">{{ ch.name }}</p>
+                    <p class="truncate text-xs text-ink-muted">{{ ch.category or '—' }}</p>
                 </div>
+                <button type="button" onclick="addToFavorites('{{ ch.id }}','iptv',event)" title="Ajouter aux favoris" aria-label="Ajouter aux favoris" class="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-surface-2 hover:text-amber-500">{{ icon('star', 15) }}</button>
             </div>
         </a>
         {% endfor %}
     </div>
     {% else %}
-    <div style="text-align:center;padding:48px;color:#9ca3af;">
-        <i class="fas fa-tv" style="font-size:3rem;margin-bottom:16px;opacity:.4;"></i>
-        <h2 style="font-size:1.1rem;font-weight:700;margin:0 0 8px;">Aucune chaîne disponible</h2>
-        <p style="font-size:14px;margin:0 0 20px;">Cette playlist n'a pas encore été synchronisée.</p>
-        <a href="/" style="background:#dc2626;color:#fff;padding:10px 22px;border-radius:10px;text-decoration:none;font-weight:700;">← Accueil</a>
+    <div class="card flex flex-col items-center gap-2 p-10 text-center text-ink-muted">
+        {{ icon('tv-2', 30) }}
+        <p class="font-medium text-ink">Aucune chaîne disponible</p>
+        <p class="text-sm">Cette playlist n'a pas encore été synchronisée.</p>
+        <a href="/" class="mt-2 text-sm font-medium text-accent-2 hover:underline">← Accueil</a>
     </div>
     {% endif %}
 </div>
-{% endblock %}'''
+{% endblock %}
+'''
 
     # ══════════════════════════════════════════════════════════════════
     # ÉCRITURE SUR DISQUE
@@ -13344,76 +13825,46 @@ document.addEventListener('DOMContentLoaded',function(){
     PROFILE_TEMPLATE = r'''{% extends "base.html" %}
 {% block title %}Mon Profil - {{ app_name }}{% endblock %}
 {% block content %}
-<div style="max-width:800px;margin:0 auto;">
-    <h1 style="font-size:1.6rem;font-weight:900;margin:0 0 8px;display:flex;align-items:center;gap:12px;">
-        <span style="width:40px;height:40px;background:linear-gradient(135deg,#2563eb,#7c3aed);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:18px;"></span>
-        Mon Profil
-    </h1>
-    <p style="color:#6b7280;font-size:14px;margin:0 0 28px;">Votre espace personnel sur {{ app_name }}. Aucun compte requis — votre session est identifiée de manière anonyme.</p>
-
-    <!-- Carte visiteur -->
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:24px;margin-bottom:16px;" class="p-card">
-        <style>html.dark .p-card{background:#1f2937;border-color:#374151;}</style>
-        <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px;flex-wrap:wrap;">
-            <div style="width:64px;height:64px;background:linear-gradient(135deg,#dc2626,#f97316);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:1.6rem;flex-shrink:0;">
-                <i class="fas fa-user" style="color:#fff;"></i>
-            </div>
-            <div>
-                <div style="font-size:1.1rem;font-weight:800;">Visiteur Anonyme</div>
-                <div style="font-size:13px;color:#6b7280;margin-top:2px;">ID: <code id="p-vid" style="background:#f3f4f6;padding:2px 8px;border-radius:4px;font-size:12px;">{{ visitor_id[:12] }}...</code></div>
-                <div style="font-size:12px;color:#9ca3af;margin-top:4px;">Membre depuis {{ member_since }}</div>
-            </div>
-        </div>
-
-        <!-- Stats -->
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;">
-            <div style="background:#f9fafb;border-radius:10px;padding:14px;text-align:center;">
-                <div style="font-size:1.5rem;font-weight:900;color:#dc2626;">{{ fav_count }}</div>
-                <div style="font-size:11px;color:#9ca3af;margin-top:2px;">Favoris</div>
-            </div>
-            <div style="background:#f9fafb;border-radius:10px;padding:14px;text-align:center;">
-                <div style="font-size:1.5rem;font-weight:900;color:#2563eb;">{{ view_count }}</div>
-                <div style="font-size:11px;color:#9ca3af;margin-top:2px;">Vues</div>
-            </div>
-            <div style="background:#f9fafb;border-radius:10px;padding:14px;text-align:center;">
-                <div style="font-size:1.5rem;font-weight:900;color:#16a34a;">{{ stream_count }}</div>
-                <div style="font-size:11px;color:#9ca3af;margin-top:2px;">Lives créés</div>
-            </div>
-            <div style="background:#f9fafb;border-radius:10px;padding:14px;text-align:center;">
-                <div style="font-size:1.5rem;font-weight:900;color:#7c3aed;">{{ lang_pref }}</div>
-                <div style="font-size:11px;color:#9ca3af;margin-top:2px;">Langue</div>
-            </div>
+{% from 'icons.html' import icon %}
+<div class="mx-auto max-w-4xl">
+    <div class="mb-8 flex items-center gap-4">
+        <div class="flex h-16 w-16 items-center justify-center rounded-2xl bg-accent-2-soft font-display text-xl font-semibold text-accent-2">V</div>
+        <div class="min-w-0">
+            <h1 class="font-display text-xl font-semibold">Visiteur Anonyme</h1>
+            <p class="text-sm text-ink-muted">Session anonyme · aucune donnée personnelle requise</p>
+            <p class="mt-0.5 text-xs text-ink-muted">ID : <code id="p-vid" class="rounded bg-surface-2 px-1.5 py-0.5">{{ visitor_id[:12] }}...</code> · Membre depuis {{ member_since }}</p>
         </div>
     </div>
 
-    <!-- Favoris récents -->
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;margin-bottom:16px;" class="p-card">
-        <div style="padding:16px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;">
-            <h2 style="font-size:15px;font-weight:800;margin:0;">Mes Favoris</h2>
-            <span style="font-size:12px;color:#9ca3af;">{{ fav_count }} au total</span>
-        </div>
-        <div id="profile-favs" style="padding:12px;">
-            <div style="text-align:center;padding:20px;color:#9ca3af;font-size:13px;">
-                <i class="fas fa-spinner fa-spin" style="font-size:1.5rem;display:block;margin-bottom:8px;"></i>
-                Chargement de vos favoris...
+    <div class="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {% for val, lbl, ic in [(fav_count, 'Favoris', 'heart'), (view_count, 'Vues', 'eye'), (stream_count, 'Lives créés', 'cast'), (lang_pref, 'Langue', 'globe')] %}
+        <div class="card flex items-center gap-4 p-5">
+            <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-accent-2-soft text-accent-2">{{ icon(ic, 20) }}</div>
+            <div class="min-w-0">
+                <p class="truncate text-sm text-ink-muted">{{ lbl }}</p>
+                <p class="font-display tabular-nums text-2xl font-semibold leading-tight">{{ val }}</p>
             </div>
         </div>
+        {% endfor %}
     </div>
 
-    <!-- Actions -->
-    <div style="display:flex;gap:12px;flex-wrap:wrap;">
-        <a href="/settings" style="display:flex;align-items:center;gap:8px;background:#7c3aed;color:#fff;padding:12px 22px;border-radius:12px;text-decoration:none;font-weight:700;font-size:14px;transition:opacity .2s;" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
-            Paramètres
-        </a>
-        <a href="/go-live" style="display:flex;align-items:center;gap:8px;background:#dc2626;color:#fff;padding:12px 22px;border-radius:12px;text-decoration:none;font-weight:700;font-size:14px;">
-            Démarrer un live
-        </a>
-        <button onclick="pExportData()" style="display:flex;align-items:center;gap:8px;background:#f3f4f6;border:1px solid #e5e7eb;padding:12px 22px;border-radius:12px;font-weight:700;font-size:14px;cursor:pointer;color:inherit;">
-            Exporter mes données
-        </button>
+    <div class="mb-4 flex items-center justify-between">
+        <h2 class="font-display text-lg font-semibold">Mes favoris</h2>
+        <span class="flex items-center gap-2 text-xs text-ink-muted">{{ fav_count }} au total <span class="text-accent">{{ icon('heart', 16) }}</span></span>
+    </div>
+    <div id="profile-favs">
+        <div class="card flex items-center justify-center gap-2 p-10 text-sm text-ink-muted"><i class="fas fa-spinner fa-spin"></i> Chargement de vos favoris...</div>
+    </div>
+
+    <div class="mt-8 flex flex-wrap gap-3">
+        <a href="/settings" class="flex items-center gap-2 rounded-full border border-border px-5 py-2.5 text-sm font-medium text-ink-muted hover:text-ink">{{ icon('settings', 15) }} Paramètres</a>
+        <a href="/go-live" class="flex items-center gap-2 rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white hover:opacity-90">{{ icon('cast', 15) }} Démarrer un live</a>
+        <button type="button" onclick="pExportData()" class="flex items-center gap-2 rounded-full border border-border px-5 py-2.5 text-sm font-medium text-ink-muted hover:text-ink">{{ icon('download', 15) }} Exporter mes données</button>
     </div>
 </div>
+{% endblock %}
 
+{% block scripts %}
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     // Charger les favoris
@@ -13423,15 +13874,16 @@ document.addEventListener('DOMContentLoaded', function() {
             var el = document.getElementById('profile-favs');
             if (!el) return;
             if (!favs.length) {
-                el.innerHTML = '<p style="text-align:center;color:#9ca3af;font-size:13px;padding:20px 0;">Aucun favori pour le moment.<br><a href="/" style="color:#dc2626;">Découvrir des chaînes →</a></p>';
+                el.innerHTML = '<div class="card p-10 text-center text-ink-muted">Aucun favori pour l\'instant — ajoutez-en depuis une chaîne en direct.<br><a href="/" class="mt-2 inline-block text-sm font-medium text-accent-2 hover:underline">Découvrir des chaînes →</a></div>';
                 return;
             }
-            el.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;">' +
+            el.innerHTML = '<div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">' +
                 favs.slice(0,12).map(function(f){
-                    return '<a href="'+f.url+'" style="display:flex;flex-direction:column;border-radius:10px;overflow:hidden;border:1px solid #e5e7eb;text-decoration:none;color:inherit;background:#fff;">'
-                        +'<div style="height:60px;background:#f3f4f6;display:flex;align-items:center;justify-content:center;">'
-                        +(f.logo?'<img src="'+f.logo+'" style="max-width:100%;max-height:50px;object-fit:contain;padding:6px;" onerror="this.style.display=\'none\'">':'<i class="fas fa-tv" style="color:#d1d5db;"></i>')
-                        +'</div><div style="padding:7px 9px;"><div style="font-size:11px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+f.title+'</div></div></a>';
+                    return '<a href="'+f.url+'" class="card group flex flex-col overflow-hidden">'
+                        +'<div class="relative flex aspect-video w-full items-center justify-center overflow-hidden bg-surface-2">'
+                        +(f.logo?'<img src="'+f.logo+'" alt="" loading="lazy" class="h-full w-full object-contain p-4" onerror="this.style.display=\'none\'">':'<span class="text-ink-muted">'+lwIcon('tv', 28)+'</span>')
+                        +'</div><div class="flex items-start gap-2.5 p-3.5"><div class="min-w-0"><p class="truncate text-sm font-semibold leading-snug">'+f.title+'</p>'
+                        +'<p class="truncate text-xs text-ink-muted">'+(f.category||f.type||'')+'</p></div></div></a>';
                 }).join('') + '</div>';
         })
         .catch(function(){});
@@ -13454,60 +13906,47 @@ function pExportData() {
     showNotification('Données exportées', 'success');
 }
 </script>
-{% endblock %}'''
+{% endblock %}
+'''
 
 
     ABOUT_TEMPLATE = r'''{% extends "base.html" %}
 {% block title %}À propos - {{ app_name }}{% endblock %}
-{% block head %}
-<style>
-html.dark .ab-card { background:#1f2937!important; border-color:#374151!important; }
-html.dark .ab-card p { color:#9ca3af!important; }
-html.dark .ab-tech-item { background:#111827!important; }
-html.dark .ab-tech-item div:last-child { color:#6b7280!important; }
-html.dark .ab-support { background:linear-gradient(135deg,#450a0a,#422006)!important; border-color:#7f1d1d!important; }
-html.dark .ab-support p { color:#fca5a5!important; }
-html.dark .ab-support h2 { color:#f87171!important; }
-html.dark .ab-phone-box { background:#1f2937!important; border-color:#374151!important; }
-html.dark .ab-phone-box .ab-phone-label { color:#9ca3af!important; }
-</style>
-{% endblock %}
 {% block content %}
-<div style="max-width:860px;margin:0 auto;">
-    <div style="background:linear-gradient(135deg,#0f172a,#1e1b4b,#312e81);border-radius:20px;padding:48px 32px;color:#fff;margin-bottom:32px;text-align:center;">
-        <div style="width:80px;height:80px;background:linear-gradient(135deg,#dc2626,#f97316);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 20px;box-shadow:0 8px 32px rgba(220,38,38,.4);">
-            <i class="fas fa-play" style="font-size:2rem;color:#fff;"></i>
+{% from 'icons.html' import icon %}
+<div class="mx-auto max-w-2xl">
+    <div class="mb-6 flex items-center gap-4">
+        <div class="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-accent text-white">{{ icon('cast', 28) }}</div>
+        <div>
+            <h1 class="font-display text-2xl font-semibold">À propos de {{ app_name }}</h1>
+            <p class="text-sm text-ink-muted">Plateforme de streaming live — version 2.0</p>
+            <p class="text-xs text-ink-muted">Propulsé par FastAPI · PostgreSQL · HLS.js · WebRTC</p>
         </div>
-        <h1 style="font-size:2.2rem;font-weight:900;margin:0 0 12px;">{{ app_name }}</h1>
-        <p style="font-size:1rem;color:rgba(255,255,255,.75);margin:0 0 8px;">Plateforme de streaming live — version 2.0 </p>
-        <p style="font-size:13px;color:rgba(255,255,255,.5);">Propulsé par FastAPI · PostgreSQL · HLS.js · WebRTC</p>
     </div>
 
-    <!-- Features -->
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;margin-bottom:32px;">
-        {% for feat in [
-            ('', 'Chaînes TV mondiales', 'Des milliers de chaînes organisées par pays, région et ville — TV, radio et webcams du monde entier.'),
-            ('', 'Streaming en direct', 'Diffusez depuis votre caméra ou votre écran avec WebRTC — sans logiciel supplémentaire.'),
-            ('', 'Radio du monde entier', 'Écoutez des centaines de stations radio de tous les continents directement dans votre navigateur.'),
-            ('', 'Guide des programmes', 'Consultez les horaires des émissions TV grâce aux guides électroniques de programmes (EPG).'),
-            ('', 'Favoris', 'Enregistrez vos chaînes préférées et retrouvez-les rapidement.'),
-            ('', 'Mode sombre', 'Interface disponible en mode clair, sombre ou automatique selon votre système.'),
-            ('', 'Chat en direct', 'Échangez en temps réel avec d\'autres spectateurs pendant les lives.'),
-            ('', 'Confidentialité', 'Aucun compte requis. Aucune donnée personnelle collectée. Navigation anonyme.'),
+    <div class="mb-6 grid gap-3 sm:grid-cols-2">
+        {% for ic, title, text in [
+            ('tv-2', 'Chaînes TV mondiales', 'Des milliers de chaînes organisées par pays, région et ville — TV, radio et webcams du monde entier.'),
+            ('cast', 'Streaming en direct', 'Diffusez depuis votre caméra ou votre écran avec WebRTC — sans logiciel supplémentaire.'),
+            ('radio', 'Radio du monde entier', 'Écoutez des centaines de stations radio de tous les continents directement dans votre navigateur.'),
+            ('calendar', 'Guide des programmes', 'Consultez les horaires des émissions TV grâce aux guides électroniques de programmes (EPG).'),
+            ('star', 'Favoris', 'Enregistrez vos chaînes préférées et retrouvez-les rapidement.'),
+            ('moon', 'Mode sombre', 'Interface disponible en mode clair, sombre ou automatique selon votre système.'),
+            ('messages-square', 'Chat en direct', 'Échangez en temps réel avec d\'autres spectateurs pendant les lives.'),
+            ('shield', 'Confidentialité', 'Aucun compte requis. Aucune donnée personnelle collectée. Navigation anonyme.'),
         ] %}
-        <div style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:18px;" class="ab-card">
-            <div style="font-size:1.8rem;margin-bottom:10px;">{{ feat[0] }}</div>
-            <h3 style="font-size:14px;font-weight:800;margin:0 0 6px;">{{ feat[1] }}</h3>
-            <p style="font-size:13px;color:#6b7280;margin:0;line-height:1.6;">{{ feat[2] }}</p>
+        <div class="card p-5">
+            <div class="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-accent-2-soft text-accent-2">{{ icon(ic, 20) }}</div>
+            <h3 class="font-display text-base font-semibold">{{ title }}</h3>
+            <p class="mt-1 text-sm leading-relaxed text-ink-muted">{{ text }}</p>
         </div>
         {% endfor %}
     </div>
 
-    <!-- Stack technique -->
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:24px;margin-bottom:16px;" class="ab-card">
-        <h2 style="font-size:15px;font-weight:800;margin:0 0 16px;">Stack technique</h2>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">
-            {% for tech in [
+    <div class="card mb-6 p-6">
+        <h2 class="mb-4 font-display text-lg font-semibold">Stack technique</h2>
+        <div class="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+            {% for name, desc in [
                 ('FastAPI', 'Framework Python async ultra-rapide'),
                 ('PostgreSQL', 'Base de données relationnelle robuste'),
                 ('HLS.js', 'Lecture de flux HLS dans le navigateur'),
@@ -13521,82 +13960,53 @@ html.dark .ab-phone-box .ab-phone-label { color:#9ca3af!important; }
                 ('Docker', 'Déploiement containerisé'),
                 ('JWT', 'Authentification sécurisée'),
             ] %}
-            <div style="background:#f9fafb;border-radius:10px;padding:12px;" class="ab-tech-item">
-                <div style="font-size:13px;font-weight:700;margin-bottom:3px;">{{ tech[0] }}</div>
-                <div style="font-size:11px;color:#9ca3af;">{{ tech[1] }}</div>
+            <div class="rounded-xl bg-surface-2 p-3">
+                <div class="text-sm font-semibold">{{ name }}</div>
+                <div class="mt-0.5 text-xs text-ink-muted">{{ desc }}</div>
             </div>
             {% endfor %}
         </div>
     </div>
 
-    <!-- Support -->
-    <div style="background:linear-gradient(135deg,#fee2e2,#fef9c3);border:1px solid #fecaca;border-radius:16px;padding:24px;" class="ab-support">
-        <h2 style="font-size:15px;font-weight:800;margin:0 0 10px;color:#dc2626;"> Soutenir le projet</h2>
-        <p style="font-size:13px;color:#374151;line-height:1.6;margin:0 0 16px;">
-            {{ app_name }} est un projet développé par BEN CORPORATION. Si vous appréciez la plateforme, vous pouvez soutenir son développement via Airtel Money et cryptomonnaies.
-        </p>
-        <div style="background:#fff;border:1px solid #fecaca;border-radius:12px;padding:14px 18px;display:inline-flex;align-items:center;gap:12px;box-shadow:0 2px 8px rgba(220,38,38,.1);" class="ab-phone-box">
-            <div style="width:40px;height:40px;background:linear-gradient(135deg,#dc2626,#f97316);border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-                <span style="font-size:1.3rem;"></span>
-            </div>
-            <div>
-                <div style="font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;" class="ab-phone-label">Airtel Money · Congo</div>
-                <div style="font-size:17px;font-weight:900;color:#dc2626;font-family:monospace;letter-spacing:.04em;">+243 998 655 061</div>
-                <div style="font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;" class="ab-phone-label">Cryptomonnaies</div>
-                <div style="font-size:17px;font-weight:900;color:#dc2626;font-family:monospace;letter-spacing:.04em;">0x30B46539266EC13A2D3720bf0289d927647fdB3E</div>            </div>
+    <div class="card border-accent/30 bg-accent/5 p-6">
+        <h2 class="mb-2 flex items-center gap-2 font-display text-lg font-semibold text-accent">{{ icon('heart', 18) }} Soutenir le projet</h2>
+        <p class="text-sm leading-relaxed text-ink-muted">{{ app_name }} est un projet développé par BEN CORPORATION. Si vous appréciez la plateforme, vous pouvez soutenir son développement via Airtel Money et cryptomonnaies.</p>
+        <div class="mt-4 rounded-xl border border-border bg-surface p-4">
+            <p class="text-xs text-ink-muted">Airtel Money · Congo</p>
+            <p class="mb-3 text-sm font-semibold">+243 998 655 061</p>
+            <p class="text-xs text-ink-muted">Cryptomonnaies</p>
+            <p class="break-all text-xs font-medium">0x30B46539266EC13A2D3720bf0289d927647fdB3E</p>
         </div>
     </div>
 </div>
-{% endblock %}'''
+{% endblock %}
+'''
 
 
     TERMS_TEMPLATE = r'''{% extends "base.html" %}
 {% block title %}Conditions d'utilisation - {{ app_name }}{% endblock %}
 {% block content %}
-<div style="max-width:760px;margin:0 auto;">
-    <h1 style="font-size:1.6rem;font-weight:900;margin:0 0 8px;">Conditions d'utilisation</h1>
-    <p style="color:#9ca3af;font-size:13px;margin:0 0 28px;">Dernière mise à jour : {{ current_date }}</p>
+<div class="mx-auto max-w-2xl">
+    <h1 class="font-display text-2xl font-semibold">Conditions d'utilisation</h1>
+    <p class="mb-4 mt-1 text-sm text-ink-muted">Dernière mise à jour : {{ current_date }}</p>
 
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:28px;display:flex;flex-direction:column;gap:24px;" class="terms-card">
-        <style>html.dark .terms-card{background:#1f2937;border-color:#374151;}</style>
-
+    <div class="card space-y-5 p-6 text-sm leading-relaxed text-ink-muted">
+        {% set sec = [
+            (1, 'Acceptation des conditions', "En utilisant " ~ app_name ~ ", vous acceptez les présentes conditions d'utilisation. Si vous n'êtes pas d'accord avec ces conditions, veuillez ne pas utiliser ce service. Ces conditions peuvent être modifiées à tout moment."),
+            (2, 'Description du service', app_name ~ " est une plateforme de streaming en ligne permettant d'accéder à des chaînes de télévision, des flux radio, des lives YouTube et des diffusions en direct créées par les utilisateurs. Les flux sont fournis par des sources tierces et nous ne garantissons pas leur disponibilité permanente."),
+            (3, 'Propriété intellectuelle', "Les flux diffusés sur la plateforme restent la propriété de leurs détenteurs respectifs. " ~ app_name ~ " ne revendique aucun droit sur le contenu diffusé. Les sources de contenu proviennent de flux publics légalement accessibles. Tout signalement de violation de droits d'auteur sera traité dans les meilleurs délais."),
+        ] %}
+        {% for n, title, text in sec %}
         <section>
-            <h2 style="font-size:15px;font-weight:800;margin:0 0 10px;display:flex;align-items:center;gap:8px;">
-                <span style="width:24px;height:24px;background:#dbeafe;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:12px;">1</span>
-                Acceptation des conditions
-            </h2>
-            <p style="font-size:13px;color:#6b7280;line-height:1.7;margin:0;">
-                En utilisant {{ app_name }}, vous acceptez les présentes conditions d'utilisation. Si vous n'êtes pas d'accord avec ces conditions, veuillez ne pas utiliser ce service. Ces conditions peuvent être modifiées à tout moment.
-            </p>
+            <h2 class="mb-1.5 flex items-center gap-2 font-medium text-ink"><span class="flex h-5 w-5 items-center justify-center rounded-md bg-accent-2-soft text-[11px] font-semibold text-accent-2">{{ n }}</span>{{ title }}</h2>
+            <p>{{ text }}</p>
         </section>
+        {% endfor %}
 
         <section>
-            <h2 style="font-size:15px;font-weight:800;margin:0 0 10px;display:flex;align-items:center;gap:8px;">
-                <span style="width:24px;height:24px;background:#dbeafe;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:12px;">2</span>
-                Description du service
-            </h2>
-            <p style="font-size:13px;color:#6b7280;line-height:1.7;margin:0;">
-                {{ app_name }} est une plateforme de streaming en ligne permettant d'accéder à des chaînes de télévision, des flux radio, des lives YouTube et des diffusions en direct créées par les utilisateurs. Les flux sont fournis par des sources tierces et nous ne garantissons pas leur disponibilité permanente.
-            </p>
-        </section>
-
-        <section>
-            <h2 style="font-size:15px;font-weight:800;margin:0 0 10px;display:flex;align-items:center;gap:8px;">
-                <span style="width:24px;height:24px;background:#dbeafe;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:12px;">3</span>
-                Propriété intellectuelle
-            </h2>
-            <p style="font-size:13px;color:#6b7280;line-height:1.7;margin:0;">
-                Les flux diffusés sur la plateforme restent la propriété de leurs détenteurs respectifs. {{ app_name }} ne revendique aucun droit sur le contenu diffusé. Les sources de contenu proviennent de flux publics légalement accessibles. Tout signalement de violation de droits d'auteur sera traité dans les meilleurs délais.
-            </p>
-        </section>
-
-        <section>
-            <h2 style="font-size:15px;font-weight:800;margin:0 0 10px;display:flex;align-items:center;gap:8px;">
-                <span style="width:24px;height:24px;background:#dbeafe;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:12px;">4</span>
-                Utilisation acceptable
-            </h2>
-            <p style="font-size:13px;color:#6b7280;line-height:1.7;margin:0 0 8px;">Vous vous engagez à ne pas :</p>
-            <ul style="font-size:13px;color:#6b7280;line-height:2;margin:0;padding-left:20px;">
+            <h2 class="mb-1.5 flex items-center gap-2 font-medium text-ink"><span class="flex h-5 w-5 items-center justify-center rounded-md bg-accent-2-soft text-[11px] font-semibold text-accent-2">4</span>Utilisation acceptable</h2>
+            <p>Vous vous engagez à ne pas :</p>
+            <ul class="mt-2 list-disc space-y-1 pl-5">
                 <li>Diffuser du contenu illégal, obscène, harcelant ou portant atteinte à des droits tiers</li>
                 <li>Utiliser le service à des fins commerciales sans autorisation</li>
                 <li>Tenter de perturber le fonctionnement de la plateforme</li>
@@ -13606,61 +14016,50 @@ html.dark .ab-phone-box .ab-phone-label { color:#9ca3af!important; }
         </section>
 
         <section>
-            <h2 style="font-size:15px;font-weight:800;margin:0 0 10px;display:flex;align-items:center;gap:8px;">
-                <span style="width:24px;height:24px;background:#dbeafe;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:12px;">5</span>
-                Confidentialité et données
-            </h2>
-            <p style="font-size:13px;color:#6b7280;line-height:1.7;margin:0;">
-                {{ app_name }} ne collecte pas de données personnelles identifiables. Aucun compte n'est requis. Un identifiant anonyme de session est créé via un cookie pour mémoriser vos préférences. Votre adresse IP peut être utilisée à des fins de sécurité et de statistiques agrégées. Aucune donnée n'est revendue à des tiers.
-            </p>
+            <h2 class="mb-1.5 flex items-center gap-2 font-medium text-ink"><span class="flex h-5 w-5 items-center justify-center rounded-md bg-accent-2-soft text-[11px] font-semibold text-accent-2">5</span>Confidentialité et données</h2>
+            <p>{{ app_name }} ne collecte pas de données personnelles identifiables. Aucun compte n'est requis. Un identifiant anonyme de session est créé via un cookie pour mémoriser vos préférences. Votre adresse IP peut être utilisée à des fins de sécurité et de statistiques agrégées. Aucune donnée n'est revendue à des tiers.</p>
         </section>
 
         <section>
-            <h2 style="font-size:15px;font-weight:800;margin:0 0 10px;display:flex;align-items:center;gap:8px;">
-                <span style="width:24px;height:24px;background:#dbeafe;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:12px;">6</span>
-                Limitation de responsabilité
-            </h2>
-            <p style="font-size:13px;color:#6b7280;line-height:1.7;margin:0;">
-                {{ app_name }} est fourni "tel quel" sans garantie d'aucune sorte. Nous ne sommes pas responsables du contenu diffusé par les sources tierces, des interruptions de service, ou des dommages résultant de l'utilisation de la plateforme.
-            </p>
+            <h2 class="mb-1.5 flex items-center gap-2 font-medium text-ink"><span class="flex h-5 w-5 items-center justify-center rounded-md bg-accent-2-soft text-[11px] font-semibold text-accent-2">6</span>Limitation de responsabilité</h2>
+            <p>{{ app_name }} est fourni "tel quel" sans garantie d'aucune sorte. Nous ne sommes pas responsables du contenu diffusé par les sources tierces, des interruptions de service, ou des dommages résultant de l'utilisation de la plateforme.</p>
         </section>
 
-        <div style="background:#f9fafb;border-radius:10px;padding:14px;text-align:center;">
-            <p style="font-size:12px;color:#9ca3af;margin:0;">Des questions ? Contactez-nous via le formulaire d'avis ou par email.</p>
+        <div class="border-t border-border pt-4">
+            <p class="text-xs">Des questions ? Contactez-nous via le formulaire d'avis ou par email.</p>
         </div>
     </div>
 </div>
-{% endblock %}'''
+{% endblock %}
+'''
 
 
     PRIVACY_TEMPLATE = r'''{% extends "base.html" %}
 {% block title %}Politique de confidentialité - {{ app_name }}{% endblock %}
 {% block content %}
-<div style="max-width:760px;margin:0 auto;">
-    <h1 style="font-size:1.6rem;font-weight:900;margin:0 0 8px;">Politique de confidentialité</h1>
-    <p style="color:#9ca3af;font-size:13px;margin:0 0 28px;">En vigueur depuis le {{ current_date }}</p>
+<div class="mx-auto max-w-2xl">
+    <h1 class="font-display text-2xl font-semibold">Politique de confidentialité</h1>
+    <p class="mb-4 mt-1 text-sm text-ink-muted">En vigueur depuis le {{ current_date }}</p>
 
-    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:28px;display:flex;flex-direction:column;gap:20px;" class="privacy-card">
-        <style>html.dark .privacy-card{background:#1f2937;border-color:#374151;}</style>
-
-        <div style="background:#dcfce7;border:1px solid #bbf7d0;border-radius:10px;padding:14px 18px;">
-            <p style="font-size:13px;color:#166534;font-weight:700;margin:0;">Résumé : Nous ne collectons aucune donnée personnelle identifiable. Aucun compte requis.</p>
+    <div class="card space-y-5 p-6 text-sm leading-relaxed text-ink-muted">
+        <div class="rounded-xl bg-accent-2-soft p-3.5 text-accent-2">
+            <p><strong>Résumé :</strong> Nous ne collectons aucune donnée personnelle identifiable. Aucun compte requis.</p>
         </div>
 
         <section>
-            <h2 style="font-size:14px;font-weight:800;margin:0 0 8px;">Données collectées automatiquement</h2>
-            <p style="font-size:13px;color:#6b7280;line-height:1.7;margin:0 0 8px;">Lors de votre visite, nous collectons automatiquement :</p>
-            <ul style="font-size:13px;color:#6b7280;line-height:1.9;margin:0;padding-left:18px;">
-                <li><strong>Adresse IP</strong> — utilisée uniquement pour la sécurité (blocage d'IPs abusives) et les statistiques géographiques agrégées</li>
-                <li><strong>Agent utilisateur</strong> — votre navigateur et système d'exploitation (pour statistiques uniquement)</li>
-                <li><strong>Pages visitées</strong> — statistiques d'audience agrégées et anonymisées</li>
-                <li><strong>Cookie de session</strong> — identifiant aléatoire unique pour mémoriser vos préférences (thème, langue, favoris)</li>
+            <h2 class="mb-1.5 font-medium text-ink">Données collectées automatiquement</h2>
+            <p>Lors de votre visite, nous collectons automatiquement :</p>
+            <ul class="mt-2 list-disc space-y-1 pl-5">
+                <li><strong class="text-ink">Adresse IP</strong> — utilisée uniquement pour la sécurité (blocage d'IPs abusives) et les statistiques géographiques agrégées</li>
+                <li><strong class="text-ink">Agent utilisateur</strong> — votre navigateur et système d'exploitation (pour statistiques uniquement)</li>
+                <li><strong class="text-ink">Pages visitées</strong> — statistiques d'audience agrégées et anonymisées</li>
+                <li><strong class="text-ink">Cookie de session</strong> — identifiant aléatoire unique pour mémoriser vos préférences (thème, langue, favoris)</li>
             </ul>
         </section>
 
         <section>
-            <h2 style="font-size:14px;font-weight:800;margin:0 0 8px;">Ce que nous ne faisons PAS</h2>
-            <ul style="font-size:13px;color:#6b7280;line-height:1.9;margin:0;padding-left:18px;">
+            <h2 class="mb-1.5 font-medium text-ink">Ce que nous ne faisons PAS</h2>
+            <ul class="mt-2 list-disc space-y-1 pl-5">
                 <li>Nous ne demandons pas de nom, email ou numéro de téléphone</li>
                 <li>Nous ne vendons ni ne partageons vos données avec des tiers</li>
                 <li>Nous ne diffusons pas de publicités ciblées</li>
@@ -13670,65 +14069,261 @@ html.dark .ab-phone-box .ab-phone-label { color:#9ca3af!important; }
         </section>
 
         <section>
-            <h2 style="font-size:14px;font-weight:800;margin:0 0 8px;">Cookies</h2>
-            <p style="font-size:13px;color:#6b7280;line-height:1.7;margin:0 0 8px;">Nous utilisons un seul cookie :</p>
-            <div style="background:#f9fafb;border-radius:8px;padding:12px;font-size:12px;font-family:monospace;color:#374151;">
-                <strong>visitor_id</strong> — Cookie de session, durée 30 jours, HttpOnly, SameSite=Lax. Contient un UUID aléatoire (ex: a1b2c3d4-...). Aucune information personnelle.
+            <h2 class="mb-1.5 font-medium text-ink">Cookies</h2>
+            <p>Nous utilisons un seul cookie :</p>
+            <div class="mt-2 rounded-xl bg-surface-2 p-3.5">
+                <strong class="text-ink">visitor_id</strong> — Cookie de session, durée 30 jours, HttpOnly, SameSite=Lax. Contient un UUID aléatoire (ex: a1b2c3d4-...). Aucune information personnelle.
             </div>
         </section>
 
         <section>
-            <h2 style="font-size:14px;font-weight:800;margin:0 0 8px;">Vos droits</h2>
-            <p style="font-size:13px;color:#6b7280;line-height:1.7;margin:0 0 8px;">Vous pouvez à tout moment :</p>
-            <ul style="font-size:13px;color:#6b7280;line-height:1.9;margin:0;padding-left:18px;">
+            <h2 class="mb-1.5 font-medium text-ink">Vos droits</h2>
+            <p>Vous pouvez à tout moment :</p>
+            <ul class="mt-2 list-disc space-y-1 pl-5">
                 <li>Supprimer le cookie visitor_id via votre navigateur</li>
-                <li>Effacer toutes vos données locales depuis <a href="/settings" style="color:#dc2626;">Paramètres → Confidentialité</a></li>
+                <li>Effacer toutes vos données locales depuis <a href="/settings" class="text-accent-2 underline underline-offset-2">Paramètres → Confidentialité</a></li>
                 <li>Demander la suppression de votre session via le formulaire de contact</li>
             </ul>
         </section>
     </div>
 </div>
-{% endblock %}'''
+{% endblock %}
+'''
 
 
     NOTFOUND_TEMPLATE = r'''{% extends "base.html" %}
 {% block title %}Page introuvable (404) - {{ app_name }}{% endblock %}
 {% block content %}
-<div style="min-height:65vh;display:flex;align-items:center;justify-content:center;text-align:center;">
-    <div style="max-width:480px;padding:20px;">
-        <div style="font-size:5rem;margin-bottom:16px;line-height:1;"></div>
-        <h1 style="font-size:4rem;font-weight:900;color:#e5e7eb;margin:0 0 8px;line-height:1;">404</h1>
-        <h2 style="font-size:1.4rem;font-weight:800;margin:0 0 10px;">Page introuvable</h2>
-        <p style="color:#6b7280;font-size:14px;margin:0 0 24px;line-height:1.6;">
-            La page que vous cherchez n'existe pas ou a été déplacée. Revenez à l'accueil pour trouver votre contenu préféré.
-        </p>
-        <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
-            <a href="/" style="background:#dc2626;color:#fff;padding:12px 24px;border-radius:12px;text-decoration:none;font-weight:700;font-size:14px;display:flex;align-items:center;gap:8px;">
-                Retour à l'accueil
-            </a>
-            <a href="/search" style="background:#f3f4f6;border:1px solid #e5e7eb;color:inherit;padding:12px 24px;border-radius:12px;text-decoration:none;font-weight:700;font-size:14px;display:flex;align-items:center;gap:8px;">
-                Rechercher
-            </a>
-        </div>
-        <!-- Suggestions -->
-        <div style="margin-top:32px;padding-top:24px;border-top:1px solid #e5e7eb;">
-            <p style="font-size:13px;color:#9ca3af;margin:0 0 16px;">Peut-être cherchiez-vous :</p>
-            <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;">
-                <a href="/?category=news" style="background:#dbeafe;color:#1d4ed8;padding:6px 14px;border-radius:99px;font-size:13px;font-weight:600;text-decoration:none;">News</a>
-                <a href="/?category=sports" style="background:#dcfce7;color:#16a34a;padding:6px 14px;border-radius:99px;font-size:13px;font-weight:600;text-decoration:none;">Sports</a>
-                <a href="/?category=radio" style="background:#e0e7ff;color:#4338ca;padding:6px 14px;border-radius:99px;font-size:13px;font-weight:600;text-decoration:none;">Radio</a>
-                <a href="/events" style="background:#fef9c3;color:#a16207;padding:6px 14px;border-radius:99px;font-size:13px;font-weight:600;text-decoration:none;">Événements</a>
-                <a href="/go-live" style="background:#fee2e2;color:#dc2626;padding:6px 14px;border-radius:99px;font-size:13px;font-weight:600;text-decoration:none;">Go Live</a>
-            </div>
+{% from 'icons.html' import icon %}
+<div class="mx-auto flex max-w-md flex-col items-center gap-4 py-20 text-center">
+    <p class="font-display text-6xl font-semibold text-ink-muted">404</p>
+    <h1 class="font-display text-xl font-semibold">Page introuvable</h1>
+    <p class="text-sm text-ink-muted">La page que vous cherchez n'existe pas ou a été déplacée. Revenez à l'accueil pour trouver votre contenu préféré.</p>
+    <div class="mt-2 flex flex-wrap items-center justify-center gap-2.5">
+        <a href="/" class="flex items-center gap-2 rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white">{{ icon('house', 15) }} Retour à l'accueil</a>
+        <a href="/search" class="flex items-center gap-2 rounded-full border border-border px-5 py-2.5 text-sm font-semibold text-ink-muted hover:text-ink">{{ icon('search', 15) }} Rechercher</a>
+    </div>
+    <div class="mt-6 w-full">
+        <p class="mb-2.5 text-xs text-ink-muted">Peut-être cherchiez-vous :</p>
+        <div class="flex flex-wrap justify-center gap-2">
+            {% for href, lbl in [('/?category=news','News'),('/?category=sports','Sports'),('/?category=radio','Radio'),('/events','Événements'),('/go-live','Go Live')] %}
+            <a href="{{ href }}" class="rounded-full border border-border px-4 py-1.5 text-xs font-medium text-ink-muted transition-colors hover:text-ink">{{ lbl }}</a>
+            {% endfor %}
         </div>
     </div>
 </div>
-{% endblock %}'''
+{% endblock %}
+'''
 
 
+
+    ICONS_TEMPLATE = r'''{# Icônes Lucide (SVG intégrés) — macro icon(name, size, cls, sw) #}
+{% set ICONS = {
+  'ban': '<circle cx="12" cy="12" r="10" /> <path d="M4.929 4.929 19.07 19.071" />',
+  'calendar': '<path d="M8 2v3" /> <path d="M16 2v3" /> <rect x="3" y="3" width="18" height="18" rx="2" /> <path d="M3 9h18" />',
+  'cast': '<path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6" /> <path d="M2 12a9 9 0 0 1 8 8" /> <path d="M2 16a5 5 0 0 1 4 4" /> <line x1="2" x2="2.01" y1="20" y2="20" />',
+  'check': '<path d="M20 6 9 17l-5-5" />',
+  'clock': '<circle cx="12" cy="12" r="10" /> <path d="M12 6v6l4 2" />',
+  'copy': '<rect width="14" height="14" x="8" y="8" rx="2" ry="2" /> <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />',
+  'download': '<path d="M12 15V3" /> <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /> <path d="m7 10 5 5 5-5" />',
+  'external-link': '<path d="M15 3h6v6" /> <path d="M10 14 21 3" /> <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />',
+  'eye': '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" /> <circle cx="12" cy="12" r="3" />',
+  'file-text': '<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" /> <path d="M14 2v5a1 1 0 0 0 1 1h5" /> <path d="M10 9H8" /> <path d="M16 13H8" /> <path d="M16 17H8" />',
+  'flag': '<path d="M4 22V4a1 1 0 0 1 .4-.8A6 6 0 0 1 8 2c3 0 5 2 7.333 2q2 0 3.067-.8A1 1 0 0 1 20 4v10a1 1 0 0 1-.4.8A6 6 0 0 1 16 16c-3 0-5-2-8-2a6 6 0 0 0-4 1.528" />',
+  'flame': '<path d="M12 3q1 4 4 6.5t3 5.5a1 1 0 0 1-14 0 5 5 0 0 1 1-3 1 1 0 0 0 5 0c0-2-1.5-3-1.5-5q0-2 2.5-4" />',
+  'heart': '<path d="M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5" />',
+  'house': '<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" /> <path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />',
+  'link-2': '<path d="M9 17H7A5 5 0 0 1 7 7h2" /> <path d="M15 7h2a5 5 0 1 1 0 10h-2" /> <line x1="8" x2="16" y1="12" y2="12" />',
+  'log-in': '<path d="m10 17 5-5-5-5" /> <path d="M15 12H3" /> <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />',
+  'log-out': '<path d="m16 17 5-5-5-5" /> <path d="M21 12H9" /> <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />',
+  'megaphone': '<path d="M11 6a13 13 0 0 0 8.4-2.8A1 1 0 0 1 21 4v12a1 1 0 0 1-1.6.8A13 13 0 0 0 11 14H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z" /> <path d="M6 14a12 12 0 0 0 2.4 7.2 2 2 0 0 0 3.2-2.4A8 8 0 0 1 10 14" /> <path d="M8 6v8" />',
+  'monitor': '<rect width="20" height="14" x="2" y="3" rx="2" /> <line x1="8" x2="16" y1="21" y2="21" /> <line x1="12" x2="12" y1="17" y2="21" />',
+  'moon': '<path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401" />',
+  'plus': '<path d="M5 12h14" /> <path d="M12 5v14" />',
+  'power': '<path d="M12 2v10" /> <path d="M18.4 6.6a9 9 0 1 1-12.77.04" />',
+  'radio': '<path d="M16.247 7.761a6 6 0 0 1 0 8.478" /> <path d="M19.075 4.933a10 10 0 0 1 0 14.134" /> <path d="M4.925 19.067a10 10 0 0 1 0-14.134" /> <path d="M7.753 16.239a6 6 0 0 1 0-8.478" /> <circle cx="12" cy="12" r="2" />',
+  'refresh-cw': '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /> <path d="M21 3v5h-5" /> <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /> <path d="M8 16H3v5" />',
+  'search': '<path d="m21 21-4.34-4.34" /> <circle cx="11" cy="11" r="8" />',
+  'send': '<path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" /> <path d="m21.854 2.147-10.94 10.939" />',
+  'shield-check': '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /> <path d="m9 12 2 2 4-4" />',
+  'square': '<rect width="18" height="18" x="3" y="3" rx="2" />',
+  'star': '<path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z" />',
+  'sun': '<circle cx="12" cy="12" r="4" /> <path d="M12 2v2" /> <path d="M12 20v2" /> <path d="m4.93 4.93 1.41 1.41" /> <path d="m17.66 17.66 1.41 1.41" /> <path d="M2 12h2" /> <path d="M20 12h2" /> <path d="m6.34 17.66-1.41 1.41" /> <path d="m19.07 4.93-1.41 1.41" />',
+  'trash-2': '<path d="M10 11v6" /> <path d="M14 11v6" /> <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /> <path d="M3 6h18" /> <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />',
+  'tv-2': '<path d="M7 21h10" /> <rect width="20" height="14" x="2" y="3" rx="2" />',
+  'users': '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /> <path d="M16 3.128a4 4 0 0 1 0 7.744" /> <path d="M22 21v-2a4 4 0 0 0-3-3.87" /> <circle cx="9" cy="7" r="4" />',
+  'wifi-off': '<path d="M12 20h.01" /> <path d="M8.5 16.429a5 5 0 0 1 7 0" /> <path d="M5 12.859a10 10 0 0 1 5.17-2.69" /> <path d="M19 12.859a10 10 0 0 0-2.007-1.523" /> <path d="M2 8.82a15 15 0 0 1 4.177-2.643" /> <path d="M22 8.82a15 15 0 0 0-11.288-3.764" /> <path d="m2 2 20 20" />',
+  'menu': '<path d="M4 5h16" /> <path d="M4 12h16" /> <path d="M4 19h16" />',
+  'user': '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" /> <circle cx="12" cy="7" r="4" />',
+  'settings': '<path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" /> <circle cx="12" cy="12" r="3" />',
+  'trophy': '<path d="M10 14.66V17a1 1 0 0 1-1 1 2 2 0 0 0-2 2v2" /> <path d="M14 14.66V17a1 1 0 0 0 1 1 2 2 0 0 1 2 2v2" /> <path d="M17.916 10H19.5A2.5 2.5 0 0 0 22 7.5V5a1 1 0 0 0-1-1h-3" /> <path d="M4 22h16" /> <path d="M6 9a6 6 0 0 0 12 0V3a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1z" /> <path d="M6.084 10H4.5A2.5 2.5 0 0 1 2 7.5V5a1 1 0 0 1 1-1h3" />',
+  'newspaper': '<path d="M15 18h-5" /> <path d="M18 14h-8" /> <path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-4 0v-9a2 2 0 0 1 2-2h2" /> <rect width="8" height="4" x="10" y="6" rx="1" />',
+  'clapperboard': '<path d="m12.296 3.464 3.02 3.956" /> <path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3z" /> <path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /> <path d="m6.18 5.276 3.1 3.899" />',
+  'church': '<path d="M10 9h4" /> <path d="M12 7v5" /> <path d="M14 21v-3a2 2 0 0 0-4 0v3" /> <path d="m18 9 3.52 2.147a1 1 0 0 1 .48.854V19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6.999a1 1 0 0 1 .48-.854L6 9" /> <path d="M6 21V7a1 1 0 0 1 .376-.782l5-3.999a1 1 0 0 1 1.249.001l5 4A1 1 0 0 1 18 7v14" />',
+  'video': '<path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5" /> <rect x="2" y="6" width="14" height="12" rx="2" />',
+  'flask-conical': '<path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2" /> <path d="M6.453 15h11.094" /> <path d="M8.5 2h7" />',
+  'tv': '<path d="m17 2-5 5-5-5" /> <rect width="20" height="15" x="2" y="7" rx="2" />',
+  'shield-half': '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /> <path d="M12 22V2" />',
+  'landmark': '<path d="M10 18v-7" /> <path d="M11.119 2.205a2 2 0 0 1 1.762 0l7.84 3.846A.5.5 0 0 1 20.5 7h-17a.5.5 0 0 1-.22-.949z" /> <path d="M14 18v-7" /> <path d="M18 18v-7" /> <path d="M3 22h18" /> <path d="M6 18v-7" />',
+  'film': '<rect width="18" height="18" x="3" y="3" rx="2" /> <path d="M7 3v18" /> <path d="M3 7.5h4" /> <path d="M3 12h18" /> <path d="M3 16.5h4" /> <path d="M17 3v18" /> <path d="M17 7.5h4" /> <path d="M17 16.5h4" />',
+  'music-2': '<circle cx="8" cy="18" r="4" /> <path d="M12 18V2l7 4" />',
+  'baby': '<path d="M10 16c.5.3 1.2.5 2 .5s1.5-.2 2-.5" /> <path d="M15 12h.01" /> <path d="M19.38 6.813A9 9 0 0 1 20.8 10.2a2 2 0 0 1 0 3.6 9 9 0 0 1-17.6 0 2 2 0 0 1 0-3.6A9 9 0 0 1 12 3c2 0 3.5 1.1 3.5 2.5s-.9 2.5-2 2.5c-.8 0-1.5-.4-1.5-1" /> <path d="M9 12h.01" />',
+  'earth': '<path d="M21.54 15H17a2 2 0 0 0-2 2v4.54" /> <path d="M7 3.34V5a3 3 0 0 0 3 3a2 2 0 0 1 2 2c0 1.1.9 2 2 2a2 2 0 0 0 2-2c0-1.1.9-2 2-2h3.17" /> <path d="M11 21.95V18a2 2 0 0 0-2-2a2 2 0 0 1-2-2v-1a2 2 0 0 0-2-2H2.05" /> <circle cx="12" cy="12" r="10" />',
+  'briefcase': '<path d="M16 20V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" /> <rect width="20" height="14" x="2" y="6" rx="2" />',
+  'gamepad-2': '<line x1="6" x2="10" y1="11" y2="11" /> <line x1="8" x2="8" y1="9" y2="13" /> <line x1="15" x2="15.01" y1="12" y2="12" /> <line x1="18" x2="18.01" y1="10" y2="10" /> <path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z" />',
+  'x': '<path d="M18 6 6 18" /> <path d="m6 6 12 12" />',
+  'chevron-right': '<path d="m9 18 6-6-6-6" />',
+  'chevron-left': '<path d="m15 18-6-6 6-6" />',
+  'chevron-down': '<path d="m6 9 6 6 6-6" />',
+  'arrow-left': '<path d="m12 19-7-7 7-7" /> <path d="M19 12H5" />',
+  'arrow-right': '<path d="M5 12h14" /> <path d="m12 5 7 7-7 7" />',
+  'circle': '<circle cx="12" cy="12" r="10" />',
+  'circle-check': '<circle cx="12" cy="12" r="10" /> <path d="m16 9-5.5 5.5L8 12" />',
+  'circle-x': '<circle cx="12" cy="12" r="10" /> <path d="m15 9-6 6" /> <path d="m9 9 6 6" />',
+  'circle-stop': '<circle cx="12" cy="12" r="10" /> <rect x="9" y="9" width="6" height="6" rx="1" />',
+  'circle-play': '<path d="M9 9.003a1 1 0 0 1 1.517-.859l4.997 2.997a1 1 0 0 1 0 1.718l-4.997 2.997A1 1 0 0 1 9 14.996z" /> <circle cx="12" cy="12" r="10" />',
+  'triangle-alert': '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" /> <path d="M12 9v4" /> <path d="M12 17h.01" />',
+  'info': '<circle cx="12" cy="12" r="10" /> <path d="M12 16v-4" /> <path d="M12 8h.01" />',
+  'lock': '<rect width="18" height="11" x="3" y="11" rx="2" ry="2" /> <path d="M7 11V7a5 5 0 0 1 10 0v4" />',
+  'save': '<path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" /> <path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" /> <path d="M7 3v4a1 1 0 0 0 1 1h7" />',
+  'undo-2': '<path d="M9 14 4 9l5-5" /> <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11" />',
+  'rotate-cw': '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" /> <path d="M21 3v5h-5" />',
+  'camera': '<path d="M13.997 4a2 2 0 0 1 1.76 1.05l.486.9A2 2 0 0 0 18.003 7H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1.997a2 2 0 0 0 1.759-1.048l.489-.904A2 2 0 0 1 10.004 4z" /> <circle cx="12" cy="13" r="3" />',
+  'layers': '<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z" /> <path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12" /> <path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17" />',
+  'mic': '<path d="M12 19v3" /> <path d="M19 10v2a7 7 0 0 1-14 0v-2" /> <rect x="9" y="2" width="6" height="13" rx="3" />',
+  'mic-off': '<path d="M12 19v3" /> <path d="M15 9.34V5a3 3 0 0 0-5.68-1.33" /> <path d="M16.95 16.95A7 7 0 0 1 5 12v-2" /> <path d="M18.89 13.23A7 7 0 0 0 19 12v-2" /> <path d="m2 2 20 20" /> <path d="M9 9v3a3 3 0 0 0 5.12 2.12" />',
+  'video-off': '<path d="M10.66 6H14a2 2 0 0 1 2 2v2.5l5.248-3.062A.5.5 0 0 1 22 7.87v8.196" /> <path d="M16 16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2" /> <path d="m2 2 20 20" />',
+  'loader-circle': '<path d="M21 12a9 9 0 1 1-6.219-8.56" />',
+  'messages-square': '<path d="M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /> <path d="M20 9a2 2 0 0 1 2 2v10.286a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1" />',
+  'satellite-dish': '<path d="M18 12a6 6 0 00-6-6" /> <path d="M2.824 10.459a8 8 0 0010.717 10.717c.558-.276.623-1.012.183-1.452l-9.448-9.448c-.44-.44-1.176-.375-1.452.183" /> <path d="M22 12A10 10 0 0012 2" /> <path d="m9 15 4-4" />',
+  'maximize': '<path d="M8 3H5a2 2 0 0 0-2 2v3" /> <path d="M21 8V5a2 2 0 0 0-2-2h-3" /> <path d="M3 16v3a2 2 0 0 0 2 2h3" /> <path d="M16 21h3a2 2 0 0 0 2-2v-3" />',
+  'share-2': '<circle cx="18" cy="5" r="3" /> <circle cx="6" cy="12" r="3" /> <circle cx="18" cy="19" r="3" /> <line x1="8.59" x2="15.42" y1="13.51" y2="17.49" /> <line x1="15.41" x2="8.59" y1="6.51" y2="10.49" />',
+  'thumbs-up': '<path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z" /> <path d="M7 10v12" />',
+  'play': '<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z" />',
+  'key-round': '<path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z" /> <circle cx="16.5" cy="7.5" r=".5" fill="currentColor" />',
+  'signal': '<path d="M2 20h.01" /> <path d="M7 20v-4" /> <path d="M12 20v-8" /> <path d="M17 20V8" /> <path d="M22 4v16" />',
+  'activity': '<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" />',
+  'shield': '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />',
+  'map-pin': '<path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0" /> <circle cx="12" cy="10" r="3" />',
+  'globe': '<circle cx="12" cy="12" r="10" /> <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" /> <path d="M2 12h20" />',
+  'smartphone': '<rect width="14" height="20" x="5" y="2" rx="2" ry="2" /> <path d="M12 18h.01" />',
+  'pencil': '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" /> <path d="m15 5 4 4" />',
+  'circle-dot': '<circle cx="12" cy="12" r="1" /> <circle cx="12" cy="12" r="10" />',
+  'bell': '<path d="M10.268 21a2 2 0 0 0 3.464 0" /> <path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" />',
+  'filter': '<path d="M10 20a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341L21.74 4.67A1 1 0 0 0 21 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14z" />',
+  'sliders-horizontal': '<path d="M10 5H3" /> <path d="M12 19H3" /> <path d="M14 3v4" /> <path d="M16 17v4" /> <path d="M21 12h-9" /> <path d="M21 19h-5" /> <path d="M21 5h-7" /> <path d="M8 10v4" /> <path d="M8 12H3" />',
+  'rotate-ccw': '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /> <path d="M3 3v5h5" />',
+  'message-circle': '<path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719" />',
+  'home': '<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" /> <path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />',
+  'globe-2': '<path d="M21.54 15H17a2 2 0 0 0-2 2v4.54" /> <path d="M7 3.34V5a3 3 0 0 0 3 3a2 2 0 0 1 2 2c0 1.1.9 2 2 2a2 2 0 0 0 2-2c0-1.1.9-2 2-2h3.17" /> <path d="M11 21.95V18a2 2 0 0 0-2-2a2 2 0 0 1-2-2v-1a2 2 0 0 0-2-2H2.05" /> <circle cx="12" cy="12" r="10" />',
+  'check-circle': '<circle cx="12" cy="12" r="10" /> <path d="m16 9-5.5 5.5L8 12" />',
+  'x-circle': '<circle cx="12" cy="12" r="10" /> <path d="m15 9-6 6" /> <path d="m9 9 6 6" />',
+  'stop-circle': '<circle cx="12" cy="12" r="10" /> <rect x="9" y="9" width="6" height="6" rx="1" />',
+  'play-circle': '<path d="M9 9.003a1 1 0 0 1 1.517-.859l4.997 2.997a1 1 0 0 1 0 1.718l-4.997 2.997A1 1 0 0 1 9 14.996z" /> <circle cx="12" cy="12" r="10" />',
+  'alert-triangle': '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" /> <path d="M12 9v4" /> <path d="M12 17h.01" />',
+  'loader-2': '<path d="M21 12a9 9 0 1 1-6.219-8.56" />',
+  'undo': '<path d="M9 14 4 9l5-5" /> <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11" />',
+} %}
+{% macro icon(name, size=18, cls='', sw=2) -%}
+<svg xmlns="http://www.w3.org/2000/svg" width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="{{ sw }}" stroke-linecap="round" stroke-linejoin="round" class="lw-icon {{ cls }}" aria-hidden="true">{{ ICONS.get(name, '')|safe }}</svg>
+{%- endmacro %}
+'''
+
+    COMPONENTS_TEMPLATE = r'''{% from 'icons.html' import icon %}
+{# Composants partagés : métadonnées de catégories + cartes (flux, pays) #}
+{%- set cat_meta = {
+    'sports':           ('trophy',        'bg-blue-100 dark:bg-blue-500/15',       'text-blue-600 dark:text-blue-400',       'Sports'),
+    'news':             ('newspaper',     'bg-red-100 dark:bg-red-500/15',         'text-red-600 dark:text-red-400',         'News'),
+    'entertainment':    ('clapperboard',  'bg-purple-100 dark:bg-purple-500/15',   'text-purple-600 dark:text-purple-400',   'Divertissement'),
+    'religion':         ('church',        'bg-emerald-100 dark:bg-emerald-500/15', 'text-emerald-600 dark:text-emerald-400', 'Religion'),
+    'radio':            ('radio',         'bg-orange-100 dark:bg-orange-500/15',   'text-orange-600 dark:text-orange-400',   'Radio'),
+    'webcam':           ('video',         'bg-cyan-100 dark:bg-cyan-500/15',       'text-cyan-600 dark:text-cyan-400',       'Webcams'),
+    'science':          ('flask-conical', 'bg-teal-100 dark:bg-teal-500/15',       'text-teal-600 dark:text-teal-400',       'Science'),
+    'iptv':             ('tv',            'bg-indigo-100 dark:bg-indigo-500/15',   'text-indigo-600 dark:text-indigo-400',   'Chaînes TV'),
+    'iptv_sports':      ('shield-half',   'bg-blue-100 dark:bg-blue-500/15',       'text-blue-600 dark:text-blue-400',       'Sports TV'),
+    'iptv_news':        ('landmark',      'bg-red-100 dark:bg-red-500/15',         'text-red-600 dark:text-red-400',         'Info TV'),
+    'iptv_documentary': ('film',          'bg-amber-100 dark:bg-amber-500/15',     'text-amber-600 dark:text-amber-400',     'Documentaires'),
+    'iptv_music':       ('music-2',       'bg-pink-100 dark:bg-pink-500/15',       'text-pink-600 dark:text-pink-400',       'Musique TV'),
+    'iptv_kids':        ('baby',          'bg-yellow-100 dark:bg-yellow-500/15',   'text-yellow-600 dark:text-yellow-500',   'Jeunesse TV'),
+    'iptv_movies':      ('film',          'bg-purple-100 dark:bg-purple-500/15',   'text-purple-600 dark:text-purple-400',   'Films TV'),
+    'iptv_science':     ('flask-conical', 'bg-teal-100 dark:bg-teal-500/15',       'text-teal-600 dark:text-teal-400',       'Science TV'),
+    'iptv_travel':      ('earth',         'bg-emerald-100 dark:bg-emerald-500/15', 'text-emerald-600 dark:text-emerald-400', 'Voyage TV'),
+    'iptv_business':    ('briefcase',     'bg-slate-200 dark:bg-slate-500/15',     'text-slate-600 dark:text-slate-300',     'Business TV'),
+    'gaming':           ('gamepad-2',     'bg-fuchsia-100 dark:bg-fuchsia-500/15', 'text-fuchsia-600 dark:text-fuchsia-400', 'Gaming'),
+} -%}
+{%- set cont_map = {
+    'FR':'EU','BE':'EU','CH':'EU','LU':'EU','DE':'EU','ES':'EU','IT':'EU','PT':'EU','NL':'EU','RU':'EU','PL':'EU','UA':'EU','RO':'EU','BG':'EU','RS':'EU','HR':'EU',
+    'SI':'EU','SK':'EU','CZ':'EU','HU':'EU','AT':'EU','GR':'EU','CY':'EU','MT':'EU','IS':'EU','NO':'EU','SE':'EU','FI':'EU','DK':'EU','IE':'EU','LT':'EU','LV':'EU',
+    'EE':'EU','MD':'EU','BY':'EU','GB':'EU','AL':'EU','AD':'EU','MC':'EU',
+    'MA':'AF','DZ':'AF','TN':'AF','SN':'AF','CI':'AF','CM':'AF','ML':'AF','CD':'AF','CG':'AF','BF':'AF','NE':'AF','TD':'AF','GA':'AF','GN':'AF','BJ':'AF','TG':'AF',
+    'MR':'AF','LY':'AF','EG':'AF','ZA':'AF','NG':'AF','KE':'AF','TZ':'AF','UG':'AF','RW':'AF','MZ':'AF','GH':'AF','ET':'AF','AO':'AF','ZM':'AF','ZW':'AF','SD':'AF',
+    'CN':'AS','JP':'AS','KR':'AS','IN':'AS','PK':'AS','BD':'AS','ID':'AS','MY':'AS','SG':'AS','PH':'AS','VN':'AS','TH':'AS','MM':'AS','KH':'AS','LA':'AS','NP':'AS',
+    'LK':'AS','AF':'AS','KZ':'AS','UZ':'AS','TJ':'AS','KG':'AS','TM':'AS','GE':'AS','AM':'AS','AZ':'AS','BN':'AS','MN':'AS','TW':'AS','HK':'AS',
+    'SA':'ME','AE':'ME','QA':'ME','KW':'ME','BH':'ME','OM':'ME','JO':'ME','IQ':'ME','IR':'ME','SY':'ME','LB':'ME','IL':'ME','TR':'ME','YE':'ME','PS':'ME',
+    'US':'NA','CA':'NA','MX':'NA','GT':'NA','HN':'NA','SV':'NA','NI':'NA','CR':'NA','PA':'NA','CU':'NA','DO':'NA','HT':'NA','JM':'NA','PR':'NA',
+    'BR':'SA','AR':'SA','CO':'SA','CL':'SA','PE':'SA','VE':'SA','EC':'SA','BO':'SA','PY':'SA','UY':'SA',
+    'AU':'OC','NZ':'OC','FJ':'OC','PG':'OC'
+} -%}
+
+{# ── Carte de flux (StreamCard) ── #}
+{% macro stream_card(href, title, logo, cid, sub, quality=none, viewers=none, fav=none, stype='') -%}
+{%- set m = cat_meta.get(cid, cat_meta['iptv']) -%}
+<a href="{{ href }}" class="card group flex flex-col overflow-hidden transition-transform hover:-translate-y-0.5 stream-card" data-stype="{{ stype }}">
+    <div class="relative flex aspect-video w-full items-center justify-center overflow-hidden {{ m[1] }}">
+        <span class="{{ m[2] }}">{{ icon(m[0], 30, '', 1.75) }}</span>
+        {% if logo %}
+        <div class="absolute inset-0 flex items-center justify-center bg-surface-2">
+            <img src="{{ logo }}" alt="" loading="lazy" onerror="var p=this.parentNode;p.parentNode.removeChild(p)" class="h-full w-full object-contain p-4 transition-transform duration-300 group-hover:scale-105">
+        </div>
+        {% endif %}
+        <div class="absolute left-2.5 top-2.5">
+            <span class="inline-flex items-center gap-1.5 rounded-full bg-accent px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white"><span class="live-dot bg-white"></span>DIRECT</span>
+        </div>
+        {% if quality %}<span class="absolute right-2.5 top-2.5 rounded-md bg-black/55 px-1.5 py-0.5 text-[10px] font-semibold text-white backdrop-blur-sm">{{ quality }}</span>{% endif %}
+        {% if viewers %}
+        <div class="absolute bottom-2.5 left-2.5 flex items-center gap-1 rounded-md bg-black/55 px-1.5 py-0.5 text-[11px] font-medium text-white backdrop-blur-sm">
+            {{ icon('eye', 12) }} {% if viewers >= 1000 %}{{ ('%.1f' % (viewers / 1000)) if viewers < 10000 else ((viewers / 1000)|int) }} k{% else %}{{ viewers }}{% endif %}
+        </div>
+        {% endif %}
+    </div>
+    <div class="flex items-start gap-2.5 p-3.5">
+        <div class="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg {{ m[1] }}"><span class="{{ m[2] }}">{{ icon(m[0], 14) }}</span></div>
+        <div class="min-w-0 flex-1">
+            <p class="truncate text-sm font-semibold leading-snug">{{ title }}</p>
+            <p class="truncate text-xs text-ink-muted">{{ sub }}</p>
+        </div>
+        {% if fav %}
+        <button type="button" onclick="addToFavorites('{{ fav[0] }}','{{ fav[1] }}',event)" title="Ajouter aux favoris" aria-label="Ajouter aux favoris"
+                class="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-surface-2 hover:text-amber-500">{{ icon('star', 15) }}</button>
+        {% endif %}
+    </div>
+</a>
+{%- endmacro %}
+
+{# ── Carte pays (CountryCard) ── #}
+{% macro country_card(pl, extra='') -%}
+{%- set cc = (pl.country or '')|string -%}
+{%- set dn = (pl.display_name or '')|string -%}
+{%- set nm = (dn.split(' ', 1)|last) if ' ' in dn else dn -%}
+{%- set cnt = pl.channel_count or 0 -%}
+<a href="/?playlist={{ pl.name }}" data-cont="{{ cont_map.get(cc, 'OTHER') }}" data-cc="{{ cc }}" data-name="{{ nm|lower }}" data-count="{{ cnt }}"
+   class="country-card group relative flex min-h-[90px] shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-surface-2 {{ extra }}">
+    <img src="https://flagcdn.com/w320/{{ cc|lower }}.png" alt="" loading="lazy" onerror="this.style.display='none'"
+         class="absolute inset-0 h-full w-full object-cover opacity-90 transition-transform duration-300 group-hover:scale-105">
+    <div class="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-transparent"></div>
+    <div class="relative mt-auto p-2.5">
+        <p class="text-xs font-bold leading-tight text-white [text-shadow:0_1px_4px_rgba(0,0,0,0.8)]">{{ nm }}</p>
+        <p class="text-[10px] text-white/80 [text-shadow:0_1px_3px_rgba(0,0,0,0.8)]">{{ cnt }} chaîne{{ 's' if cnt > 1 else '' }}</p>
+    </div>
+</a>
+{%- endmacro %}
+
+'''
 
     templates = {
         "base.html":            BASE_TEMPLATE,
+        "components.html":     COMPONENTS_TEMPLATE,
+        "icons.html":          ICONS_TEMPLATE,
         "index.html":           INDEX_TEMPLATE,
         "go_live.html":         GO_LIVE_TEMPLATE,
         "admin_dashboard.html": ADMIN_TEMPLATE,
@@ -13756,49 +14351,6 @@ html.dark .ab-phone-box .ab-phone-label { color:#9ca3af!important; }
     logger.info(f"{len(templates)} templates HTML écrits sur disque")
 
 
-# ==================== FRONTEND REACT (SPA) ====================
-# Sert le frontend React déjà compilé (dossier frontend/dist, généré par
-# `npm run build`) directement depuis ce même service FastAPI, pour n'avoir
-# qu'un seul projet à déployer sur Vercel — comme la version d'origine —
-# plutôt que deux services séparés (Vercel Services). Placé tout en bas du
-# fichier, après toutes les routes /api, /proxy, /ws, /admin/login,
-# /admin/logout, /static ci-dessus : celles-ci gardent la priorité, cette
-# route ne reçoit que ce qu'aucune route backend n'a déjà pris en charge.
-
-_FRONTEND_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend", "dist")
-_SPA_INDEX = os.path.join(_FRONTEND_DIST, "index.html")
-
-if os.path.isdir(os.path.join(_FRONTEND_DIST, "assets")):
-    app.mount("/assets", StaticFiles(directory=os.path.join(_FRONTEND_DIST, "assets")), name="frontend-assets")
-
-# Si un de ces préfixes arrive jusqu'ici, ce n'est pas une page du frontend
-# mais une vraie route backend mal orthographiée ou inexistante — un 404
-# clair vaut mieux qu'une page React qui masquerait l'erreur.
-_BACKEND_PREFIXES = ("/api/", "/proxy/", "/ws/", "/static/", "/admin/login", "/admin/logout")
-
-@app.get("/{full_path:path}")
-async def spa_catch_all(full_path: str):
-    """Sert le frontend React pour toute route qui n'est pas une route
-    backend explicite ci-dessus — React Router prend le relais côté
-    navigateur (accueil, /watch/:kind/:id, /search, /admin, /settings…)."""
-    request_path = "/" + full_path
-    if request_path.startswith(_BACKEND_PREFIXES):
-        raise HTTPException(status_code=404, detail="Route introuvable")
-
-    # Fichier statique existant à la racine du build (favicon.svg, icons.svg…)
-    if full_path:
-        candidate = os.path.join(_FRONTEND_DIST, full_path)
-        if os.path.isfile(candidate):
-            return FileResponse(candidate)
-
-    if os.path.isfile(_SPA_INDEX):
-        return FileResponse(_SPA_INDEX)
-    raise HTTPException(
-        status_code=500,
-        detail="Frontend non construit (frontend/dist manquant) — lance `npm run build` dans frontend/ avant de déployer.",
-    )
-
-
 # ==================== DÉMARRAGE ====================
 
 if __name__ == "__main__":
@@ -13806,7 +14358,7 @@ if __name__ == "__main__":
     print(f"{settings.APP_NAME} v{settings.APP_VERSION}")
     print("=" * 80)
     print(f"http://localhost:8001")
-    print(f"Propriétaire: {settings.OWNER_ID}")
+    print(f"Propriétaire: {settings.OWNER_ID} / {settings.ADMIN_PASSWORD}")
     print(f"{len(EXTERNAL_STREAMS)} flux externes ({sum(1 for s in EXTERNAL_STREAMS if s['stream_type'] == 'youtube')} YouTube)")
     print(f"{len(IPTV_PLAYLISTS)} playlists IPTV (pays/subdivisions/villes/catégories)")
     print(f" yt-dlp: {'disponible' if YT_DLP_AVAILABLE else 'non installé (fallback iframe)'}")
