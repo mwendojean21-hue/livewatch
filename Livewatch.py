@@ -79,6 +79,9 @@ from fastapi.templating import Jinja2Templates
 # Sur Vercel, tout le système de fichiers déployé est en lecture seule, sauf /tmp.
 # Vercel définit automatiquement la variable d'environnement VERCEL=1.
 IS_SERVERLESS = bool(os.environ.get("VERCEL"))
+from pathlib import Path as _Path
+BASE_DIR   = _Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"   # assets commités (peut ne pas exister dans la nouvelle structure)
 WRITABLE_DIR  = "/tmp/livewatch" if IS_SERVERLESS else "."
 os.makedirs(WRITABLE_DIR, exist_ok=True)
 
@@ -2459,10 +2462,14 @@ def verify_password(plain: str, hashed: str) -> bool:
             expected = "sha256$" + _hl.sha256(plain.encode('utf-8')).hexdigest()
             return secrets.compare_digest(hashed, expected)
         # Cas 2 : hash bcrypt normal
-        plain_bytes = plain.encode('utf-8')
-        if len(plain_bytes) > 72:
-            plain = plain_bytes[:72].decode('utf-8', errors='ignore')
-        return pwd_context.verify(plain, hashed)
+        plain_bytes = plain.encode('utf-8')[:72]
+        try:
+            import bcrypt as _bc
+            if hashed and hashed.startswith(("$2a$", "$2b$", "$2y$")):
+                return _bc.checkpw(plain_bytes, hashed.encode('utf-8'))
+        except ImportError:
+            pass
+        return pwd_context.verify(plain_bytes.decode('utf-8', errors='ignore'), hashed)
     except Exception as e:
         logger.warning(f"verify_password error: {e}")
         return False
@@ -2470,10 +2477,12 @@ def verify_password(plain: str, hashed: str) -> bool:
 def get_password_hash(pw: str) -> str:
     """Hache un mot de passe — bcrypt prioritaire, sha256 en secours"""
     try:
-        pw_bytes = pw.encode('utf-8')
-        if len(pw_bytes) > 72:
-            pw = pw_bytes[:72].decode('utf-8', errors='ignore')
-        return pwd_context.hash(pw)
+        pw_bytes = pw.encode('utf-8')[:72]
+        try:
+            import bcrypt as _bc
+            return _bc.hashpw(pw_bytes, _bc.gensalt()).decode('utf-8')
+        except ImportError:
+            return pwd_context.hash(pw_bytes.decode('utf-8', errors='ignore'))
     except Exception as e:
         logger.warning(f"bcrypt unavailable, using sha256 fallback: {e}")
         import hashlib as _hl
@@ -2663,10 +2672,11 @@ async def lifespan(app: FastAPI):
     for directory in [TEMPLATES_DIR, UPLOADS_DIR, THUMBNAILS_DIR, RECORDINGS_DIR]:
         os.makedirs(directory, exist_ok=True)
 
-    if os.path.exists(settings.LOGO_PATH):
-        logger.info(f"Logo trouvé: {settings.LOGO_PATH}")
+    _logo = BASE_DIR / settings.LOGO_PATH
+    if _logo.exists():
+        logger.info(f"Logo trouvé: {_logo}")
     else:
-        logger.warning(f"Logo non trouvé: {settings.LOGO_PATH}")
+        logger.warning(f"Logo non trouvé: {_logo}")
 
     # Écriture des templates
     write_all_templates()
@@ -2784,7 +2794,10 @@ app.mount("/static/thumbnails", StaticFiles(directory=THUMBNAILS_DIR), name="sta
 app.mount("/static/uploads", StaticFiles(directory=UPLOADS_DIR), name="static-uploads")
 app.mount("/static/recordings", StaticFiles(directory=RECORDINGS_DIR), name="static-recordings")
 # Assets statiques commités dans le repo (logo, CSS, JS, favicon...)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+if STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+else:
+    logger.warning(f"Dossier static/ absent ({STATIC_DIR}) — mount /static général ignoré")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 # Fix Python 3.14 + Jinja2: LRUCache TypeError quand globals contient des dicts
 try:
@@ -3601,7 +3614,7 @@ async def search_page(request: Request, q: str = "", db: Session = Depends(get_d
 @app.get("/static/logo")
 async def get_logo():
     """Retourne le logo de l'application"""
-    for path in ["static/livewatch.png", "static/IMG.png", settings.LOGO_PATH]:
+    for path in [STATIC_DIR / "livewatch.png", STATIC_DIR / "IMG.png", BASE_DIR / settings.LOGO_PATH]:
         if os.path.exists(path):
             return FileResponse(path, media_type="image/png")
     return RedirectResponse(url="https://via.placeholder.com/200x200?text=Livewatch")
