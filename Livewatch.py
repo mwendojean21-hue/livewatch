@@ -103,7 +103,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, Text, Float, ForeignKey, Index, and_, or_, desc, func
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy.orm import sessionmaker, Session, relationship, declarative_base
+from sqlalchemy.orm import sessionmaker, Session, relationship, declarative_base, synonym
 from sqlalchemy.pool import QueuePool
 from passlib.context import CryptContext
 from jose import JWTError, jwt
@@ -253,6 +253,11 @@ class Visitor(Base):
     total_streams      = Column(Integer, default=0)
     preferred_language = Column(String(10), default="fr")
     theme              = Column(String(10), default="auto")
+    # Champs utilisés par le profil / favoris / suivi de visites (absents du modèle auparavant => AttributeError)
+    first_seen         = synonym("created_at")          # alias : pas de colonne supplémentaire
+    favorites          = Column(Text, default="[]")
+    page_count         = Column(Integer, default=0)
+    last_page          = Column(String(200), nullable=True)
 
 class ExternalStream(Base):
     __tablename__ = "external_streams"
@@ -1395,10 +1400,10 @@ EXTRA_RADIO_STATIONS = [
 EXTRA_NEWS_CHANNELS = [
     {"title":"Al Jazeera English","stream_url":"https://live-hls-web-aje.getaj.net/AJE/index.m3u8","category":"news","country":"QA","stream_type":"hls","logo":"https://www.aljazeera.com/images/logo_aje-nb.png","description":"Al Jazeera English — International news 24/7"},
     {"title":"Al Jazeera Arabic","stream_url":"https://live-hls-web-ajn.getaj.net/AJN/index.m3u8","category":"news","country":"QA","stream_type":"hls","logo":"","description":"قناة الجزيرة — أخبار 24 ساعة"},
-    {"title":"France 24 Français","stream_url":"https://static.france24.com/live/F24_FR_LO_HLS/live_web.m3u8","category":"news","country":"FR","stream_type":"hls","logo":"https://static.france24.com/f24-assets/images/France24.png","description":"France 24 en français — Actualités en continu"},
-    {"title":"France 24 English","stream_url":"https://static.france24.com/live/F24_EN_LO_HLS/live_web.m3u8","category":"news","country":"FR","stream_type":"hls","logo":"","description":"France 24 in English"},
-    {"title":"France 24 Español","stream_url":"https://static.france24.com/live/F24_ES_LO_HLS/live_web.m3u8","category":"news","country":"FR","stream_type":"hls","logo":"","description":"France 24 en Español"},
-    {"title":"France 24 Arabic","stream_url":"https://static.france24.com/live/F24_AR_LO_HLS/live_web.m3u8","category":"news","country":"FR","stream_type":"hls","logo":"","description":"فرانس 24 بالعربية"},
+    {"title":"France 24 Français","stream_url":"https://live.france24.com/hls/live/2037179-b/F24_FR_HI_HLS/master_5000.m3u8","category":"news","country":"FR","stream_type":"hls","logo":"https://static.france24.com/f24-assets/images/France24.png","description":"France 24 en français — Actualités en continu"},
+    {"title":"France 24 English","stream_url":"https://live.france24.com/hls/live/2037218-b/F24_EN_HI_HLS/master_5000.m3u8","category":"news","country":"FR","stream_type":"hls","logo":"","description":"France 24 in English"},
+    {"title":"France 24 Español","stream_url":"https://live.france24.com/hls/live/2037220-b/F24_ES_HI_HLS/master_5000.m3u8","category":"news","country":"FR","stream_type":"hls","logo":"","description":"France 24 en Español"},
+    {"title":"France 24 Arabic","stream_url":"https://live.france24.com/hls/live/2037222-b/F24_AR_HI_HLS/master_5000.m3u8","category":"news","country":"FR","stream_type":"hls","logo":"","description":"فرانس 24 بالعربية"},
     {"title":"DW English","stream_url":"https://dwamdstream102.akamaized.net/hls/live/2015526/dwstream102/index.m3u8","category":"news","country":"DE","stream_type":"hls","logo":"","description":"Deutsche Welle — International English news"},
     {"title":"DW Français","stream_url":"https://dwamdstream106.akamaized.net/hls/live/2015531/dwstream106/index.m3u8","category":"news","country":"DE","stream_type":"hls","logo":"","description":"Deutsche Welle en Français"},
     {"title":"DW Español","stream_url":"https://dwamdstream104.akamaized.net/hls/live/2015530/dwstream104/index.m3u8","category":"news","country":"DE","stream_type":"hls","logo":"","description":"Deutsche Welle en Español"},
@@ -1453,9 +1458,9 @@ EXTRA_SPORTS_CHANNELS = [
 
 EXTERNAL_STREAMS = [
     # ===== NEWS INTERNATIONALES =====
-    {"title":"France 24 English","category":"news","subcategory":"international","country":"FR","language":"en","url":"https://static.france24.com/live/F24_EN_LO_HLS/live_web.m3u8","logo":"https://upload.wikimedia.org/wikipedia/commons/thumb/a/a8/France_24_logo.svg/200px-France_24_logo.svg.png","proxy_needed":False,"quality":"HD","stream_type":"hls"},
-    {"title":"France 24 Français","category":"news","subcategory":"international","country":"FR","language":"fr","url":"https://static.france24.com/live/F24_FR_LO_HLS/live_web.m3u8","logo":"https://upload.wikimedia.org/wikipedia/commons/thumb/a/a8/France_24_logo.svg/200px-France_24_logo.svg.png","proxy_needed":False,"quality":"HD","stream_type":"hls"},
-    {"title":"France 24 عربي","category":"news","subcategory":"international","country":"FR","language":"ar","url":"https://static.france24.com/live/F24_AR_LO_HLS/live_web.m3u8","logo":"https://upload.wikimedia.org/wikipedia/commons/thumb/a/a8/France_24_logo.svg/200px-France_24_logo.svg.png","proxy_needed":False,"quality":"HD","stream_type":"hls"},
+    {"title":"France 24 English","category":"news","subcategory":"international","country":"FR","language":"en","url":"https://live.france24.com/hls/live/2037218-b/F24_EN_HI_HLS/master_5000.m3u8","logo":"https://upload.wikimedia.org/wikipedia/commons/thumb/a/a8/France_24_logo.svg/200px-France_24_logo.svg.png","proxy_needed":False,"quality":"HD","stream_type":"hls"},
+    {"title":"France 24 Français","category":"news","subcategory":"international","country":"FR","language":"fr","url":"https://live.france24.com/hls/live/2037179-b/F24_FR_HI_HLS/master_5000.m3u8","logo":"https://upload.wikimedia.org/wikipedia/commons/thumb/a/a8/France_24_logo.svg/200px-France_24_logo.svg.png","proxy_needed":False,"quality":"HD","stream_type":"hls"},
+    {"title":"France 24 عربي","category":"news","subcategory":"international","country":"FR","language":"ar","url":"https://live.france24.com/hls/live/2037222-b/F24_AR_HI_HLS/master_5000.m3u8","logo":"https://upload.wikimedia.org/wikipedia/commons/thumb/a/a8/France_24_logo.svg/200px-France_24_logo.svg.png","proxy_needed":False,"quality":"HD","stream_type":"hls"},
     {"title":"euronews English","category":"news","subcategory":"international","country":"EU","language":"en","url":"https://euronews-cnx.akamaized.net/hls/live/694960/euronewsEN/master.m3u8","logo":"https://upload.wikimedia.org/wikipedia/commons/thumb/2/25/Euronews_logo_2021.svg/200px-Euronews_logo_2021.svg.png","proxy_needed":False,"quality":"HD","stream_type":"hls"},
     {"title":"euronews Français","category":"news","subcategory":"international","country":"EU","language":"fr","url":"https://euronews-cnx.akamaized.net/hls/live/694960/euronewsFR/master.m3u8","logo":"https://upload.wikimedia.org/wikipedia/commons/thumb/2/25/Euronews_logo_2021.svg/200px-Euronews_logo_2021.svg.png","proxy_needed":False,"quality":"HD","stream_type":"hls"},
     {"title":"euronews Deutsch","category":"news","subcategory":"international","country":"EU","language":"de","url":"https://euronews-cnx.akamaized.net/hls/live/694960/euronewsDE/master.m3u8","logo":"https://upload.wikimedia.org/wikipedia/commons/thumb/2/25/Euronews_logo_2021.svg/200px-Euronews_logo_2021.svg.png","proxy_needed":False,"quality":"HD","stream_type":"hls"},
@@ -2663,6 +2668,7 @@ async def lifespan(app: FastAPI):
     # ── 2. Créer / mettre à jour les tables ────────────────────────────
     try:
         Base.metadata.create_all(bind=engine)
+        ensure_visitor_columns()
         logger.info("Tables PostgreSQL synchronisées")
     except Exception as e:
         logger.error(f"Erreur create_all : {e}")
@@ -2722,6 +2728,7 @@ async def lifespan(app: FastAPI):
             owner.locked_until         = None
             logger.info(f"Compte admin synchronisé : {_admin_username} / {_admin_email}")
         db.commit()
+        fix_stale_external_urls(db)
         init_external_streams(db)
         init_iptv_playlists(db)
         # Nettoyage visiteurs expirés avec cascade manuelle (FK vers user_streams)
@@ -3055,6 +3062,42 @@ _LANG_WORDS = {
     "español": "es", "espanol": "es", "spanish": "es", "arabic": "ar", "arabe": "ar", "عربي": "ar",
     "deutsch": "de", "german": "de", "portugues": "pt", "português": "pt",
 }
+
+# Anciennes URL (playlists périmées => téléchargement du .m3u8) -> URL officielles actuelles
+STALE_URL_FIXES = {
+    "https://static.france24.com/live/F24_FR_LO_HLS/live_web.m3u8": "https://live.france24.com/hls/live/2037179-b/F24_FR_HI_HLS/master_5000.m3u8",
+    "https://static.france24.com/live/F24_EN_LO_HLS/live_web.m3u8": "https://live.france24.com/hls/live/2037218-b/F24_EN_HI_HLS/master_5000.m3u8",
+    "https://static.france24.com/live/F24_ES_LO_HLS/live_web.m3u8": "https://live.france24.com/hls/live/2037220-b/F24_ES_HI_HLS/master_5000.m3u8",
+    "https://static.france24.com/live/F24_AR_LO_HLS/live_web.m3u8": "https://live.france24.com/hls/live/2037222-b/F24_AR_HI_HLS/master_5000.m3u8",
+}
+
+def _fix_stale_url(url):
+    return STALE_URL_FIXES.get((url or "").strip(), url)
+
+def ensure_visitor_columns():
+    """create_all() ne modifie pas une table existante : on ajoute les colonnes manquantes de `visitors`."""
+    from sqlalchemy import text as _text
+    stmts = [
+        "ALTER TABLE visitors ADD COLUMN IF NOT EXISTS favorites TEXT DEFAULT '[]'",
+        "ALTER TABLE visitors ADD COLUMN IF NOT EXISTS page_count INTEGER DEFAULT 0",
+        "ALTER TABLE visitors ADD COLUMN IF NOT EXISTS last_page VARCHAR(200)",
+    ]
+    for stmt in stmts:
+        try:
+            with engine.begin() as conn:
+                conn.execute(_text(stmt))
+        except Exception as e:
+            logger.warning(f"Migration visitors ignorée ({stmt[:60]}...): {e}")
+
+def fix_stale_external_urls(db):
+    """Corrige en base les flux « maison » dont l'URL est périmée (appelé au démarrage)."""
+    try:
+        for old, new in STALE_URL_FIXES.items():
+            db.query(ExternalStream).filter(ExternalStream.url == old).update({"url": new})
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"fix_stale_external_urls: {e}")
 
 def _item_title(x) -> str:
     return (getattr(x, "title", None) or getattr(x, "name", None) or "")
@@ -3423,17 +3466,22 @@ async def watch_external(request: Request, stream_id: str, db: Session = Depends
     if not stream:
         return RedirectResponse(url="/", status_code=303)
 
-    # Les flux « maison » (ex. static.france24.com/...live_web.m3u8) renvoient des playlists
-    # périmées que le navigateur télécharge au lieu de les lire. Si la même chaîne existe dans
-    # le catalogue iptv-org (celui des pages pays, qui se lit bien), on joue celle-là.
+    # URL à essayer : flux iptv-org équivalent (celui des pages pays, validé) d'abord, puis le flux
+    # « maison » (corrigé s'il est périmé). Le lecteur passe au suivant en cas d'échec.
+    play_urls = []
     if stream.stream_type in ("hls", "dash", None, ""):
         try:
             working = _find_working_iptv_equivalent(db, stream)
         except Exception as _e:
             logger.warning(f"équivalent iptv introuvable pour {stream.title}: {_e}")
             working = None
-        if working:
-            return RedirectResponse(url=f"/watch/iptv/{working.id}", status_code=307)
+        if working and (working.url or "").strip():
+            play_urls.append(working.url.strip())
+    _own = _fix_stale_url(stream.url)
+    if _own and _own not in play_urls:
+        play_urls.append(_own)
+    play_url = play_urls[0] if play_urls else (stream.url or "")
+    alt_urls = play_urls[1:]
 
     # Incrémenter le compteur de viewers
     stream.viewers += 1
@@ -3458,6 +3506,8 @@ async def watch_external(request: Request, stream_id: str, db: Session = Depends
             "request": request,
             "stream": stream,
             "similar_streams": recommendations,
+            "play_url": play_url,
+            "alt_urls": alt_urls,
             "recommendations": recommendations,
             "language": get_language(request),
             "visitor_id": get_visitor_id(request),
@@ -6967,6 +7017,7 @@ def _track_visit(request: Request, db: Session, page: str = "/"):
         if visitor:
             visitor.last_seen  = now
             visitor.last_page  = page[:200]
+            visitor.page_count = (visitor.page_count or 0) + 1
         else:
             visitor = Visitor(visitor_id=visitor_id, ip_address=client_ip, user_agent=request.headers.get("user-agent","")[:500], first_seen=now, last_seen=now, page_count=1, last_page=page[:200], theme="auto", preferred_language="fr", favorites="[]")
             db.add(visitor)
@@ -8931,6 +8982,7 @@ async def on_startup():
     # 1. Créer les tables
     try:
         Base.metadata.create_all(bind=engine)
+        ensure_visitor_columns()
         logger.info("Base de données PostgreSQL connectée")
     except Exception as e:
         logger.error(f"Erreur DB: {e}")
@@ -11470,12 +11522,18 @@ function _renderLeafletMap(data) {
         attributionControl: true
     });
 
-    var tileUrl = isDark
-        ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-        : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
-    L.tileLayer(tileUrl, {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-        subdomains: 'abcd', maxZoom: 19
+    // Tuiles OpenStreetMap officielles (sans clé API). CARTO (basemaps.cartocdn.com) exige désormais une clé.
+    // Thème sombre : on inverse les couleurs des tuiles par CSS.
+    if (!document.getElementById('osm-dark-css')) {
+        var _st = document.createElement('style');
+        _st.id = 'osm-dark-css';
+        _st.textContent = '.osm-dark{filter:invert(1) hue-rotate(180deg) brightness(.92) contrast(.9) saturate(.7);}';
+        document.head.appendChild(_st);
+    }
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        maxZoom: 19,
+        className: isDark ? 'osm-dark' : ''
     }).addTo(_leafletMap);
 
     // ── Cercles agrégés par pays (visibles de loin) ──
@@ -12129,7 +12187,7 @@ document.addEventListener('DOMContentLoaded',function(){
 {% from 'icons.html' import icon %}
 {% from 'components.html' import stream_card, cat_meta %}
 {% set cm = cat_meta.get(stream.category, cat_meta['iptv']) %}
-<div id="we-layout" class="mx-auto grid max-w-7xl gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+<div id="we-layout" class="mx-auto grid max-w-7xl gap-6 xl:grid-cols-[minmax(0,1fr)_300px]">
 
 <!-- ── COLONNE GAUCHE : LECTEUR ── -->
 <div class="min-w-0">
@@ -12277,9 +12335,13 @@ document.addEventListener('DOMContentLoaded',function(){
 <div>
     {% if similar_streams %}
     <div class="mb-4 flex items-center justify-between"><h2 class="font-display text-lg font-semibold">Chaînes similaires</h2></div>
-    <div class="grid gap-3">
-        {% for s in similar_streams[:8] %}
-        {{ stream_card('/watch/external/' ~ s.id, s.title, s.logo, (s.category if s.category in cat_meta else 'iptv'), (cat_meta.get(s.category, cat_meta['iptv'])[3] ~ ((' · ' ~ s.country) if s.country else ''))) }}
+    <div class="custom-scroll grid gap-2 sm:grid-cols-2 xl:max-h-[640px] xl:grid-cols-1 xl:overflow-y-auto xl:pr-1">
+        {% for s in similar_streams[:12] %}
+        <a href="/watch/external/{{ s.id }}" class="flex items-center gap-3 rounded-xl border border-border bg-surface p-2 transition-colors hover:bg-surface-2">
+            <span class="flex h-11 w-[72px] shrink-0 items-center justify-center overflow-hidden rounded-lg bg-surface-2">{% if s.logo %}<img src="{{ s.logo }}" alt="" loading="lazy" class="h-full w-full object-contain p-1" onerror="this.style.display='none'">{% endif %}</span>
+            <span class="min-w-0 flex-1"><span class="block truncate text-sm font-medium">{{ s.title }}</span><span class="block truncate text-xs text-ink-muted">{{ cat_meta.get(s.category, cat_meta['iptv'])[3] ~ ((' · ' ~ s.country) if s.country else '') }}</span></span>
+            <span class="h-2 w-2 shrink-0 rounded-full bg-accent"></span>
+        </a>
         {% endfor %}
     </div>
     {% else %}
@@ -12305,7 +12367,8 @@ document.addEventListener('DOMContentLoaded',function(){
     // Niveau 6 : Message d'erreur avec conseils
     // ═══════════════════════════════════════════════════════════
     var streamType = {{ stream.stream_type | tojson }};
-    var streamUrl  = {{ (stream.url or "") | tojson }};
+    var streamUrl  = {{ (play_url or stream.url or "") | tojson }};
+    var _alts      = {{ (alt_urls or []) | tojson }};
     var streamId   = {{ stream.id | tojson }};
     var _hls = null;
     var _fallbackStep = 0;
@@ -12485,7 +12548,21 @@ document.addEventListener('DOMContentLoaded',function(){
         iframe.addEventListener('error', function() { _showFinalErr(); });
     }
 
+    function _tryNextUrl() {
+        if (!_alts || !_alts.length) return false;
+        streamUrl = _alts.shift();
+        proxyUrl = streamUrl ? '/proxy/stream?url=' + encodeURIComponent(streamUrl) : '';
+        effectiveType = _detectType(streamUrl) || streamType;
+        _log('Flux suivant : ' + streamUrl);
+        if (_hls) { _hls.destroy(); _hls = null; }
+        var v = document.getElementById('we-video');
+        if (v) v.style.display = '';
+        weInit();
+        return true;
+    }
+
     function _showFinalErr() {
+        if (_tryNextUrl()) return;
         _showErr('Impossible de lire ce flux. Il est peut-être hors ligne, géo-bloqué, ou dans un format non supporté par votre navigateur.');
     }
 
@@ -12882,7 +12959,7 @@ document.addEventListener('DOMContentLoaded',function(){
 {% from 'icons.html' import icon %}
 {% from 'components.html' import stream_card, cat_meta %}
 {% set cm = cat_meta.get(channel.category, cat_meta['iptv']) %}
-<div id="wi-layout" class="mx-auto grid max-w-7xl gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+<div id="wi-layout" class="mx-auto grid max-w-7xl gap-6 xl:grid-cols-[minmax(0,1fr)_300px]">
 
 <div class="min-w-0">
     <!-- Fil d'Ariane -->
@@ -12952,9 +13029,13 @@ document.addEventListener('DOMContentLoaded',function(){
 <div>
     <div class="mb-4 flex items-center justify-between"><h2 class="font-display text-lg font-semibold">Autres chaînes — {{ channel.country }}</h2></div>
     {% if other_channels %}
-    <div class="custom-scroll grid max-h-[640px] gap-3 overflow-y-auto pr-1">
+    <div class="custom-scroll grid gap-2 sm:grid-cols-2 xl:max-h-[640px] xl:grid-cols-1 xl:overflow-y-auto xl:pr-1">
         {% for ch in other_channels[:12] %}
-        {{ stream_card('/watch/iptv/' ~ ch.id, ch.name, ch.logo, (ch.category if ch.category in cat_meta else 'iptv'), (cat_meta.get(ch.category, cat_meta['iptv'])[3] if ch.category else 'TV')) }}
+        <a href="/watch/iptv/{{ ch.id }}" class="flex items-center gap-3 rounded-xl border border-border bg-surface p-2 transition-colors hover:bg-surface-2">
+            <span class="flex h-11 w-[72px] shrink-0 items-center justify-center overflow-hidden rounded-lg bg-surface-2">{% if ch.logo %}<img src="{{ ch.logo }}" alt="" loading="lazy" class="h-full w-full object-contain p-1" onerror="this.style.display='none'">{% endif %}</span>
+            <span class="min-w-0 flex-1"><span class="block truncate text-sm font-medium">{{ ch.name }}</span><span class="block truncate text-xs text-ink-muted">{{ cat_meta.get(ch.category, cat_meta['iptv'])[3] if ch.category else 'TV' }}</span></span>
+            <span class="h-2 w-2 shrink-0 rounded-full bg-accent"></span>
+        </a>
         {% endfor %}
     </div>
     {% else %}
@@ -13074,7 +13155,6 @@ document.addEventListener('DOMContentLoaded',function(){
     function _initMP4Direct(){
         var v = document.getElementById('wi-video');
         if (!v || !_url) { _showFinalErr(); return; }
-        if (_type === 'hls' || /\.m3u8?(\?|$)/i.test(_url)) { _showFinalErr(); return; }
         if (_hls) { _hls.destroy(); _hls = null; }
         v.src = _url; v.load(); v.play().catch(function(){});
         v.addEventListener('error', function(){ _showFinalErr(); }, {once:true});
