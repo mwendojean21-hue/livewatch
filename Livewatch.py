@@ -3035,14 +3035,29 @@ async def health_head():
 
 # Dans la fonction home(), remplacez la section de traitement des playlists par :
 
-# ==================== POPULARITÉ & CHAÎNES PAR PAYS ====================
-# Les pages pays réutilisent les mêmes chaînes (ExternalStream) que l'accueil, classées
-# par popularité : France 24 en premier, puis les grandes chaînes, puis le nombre de vues.
+# ==================== POPULARITÉ + FLUX QUI FONCTIONNENT ====================
+# Ordre voulu partout : France 24 en premier, puis les grandes chaînes, puis les plus vues.
 POPULAR_CHANNEL_KEYWORDS = [
     "france 24", "tf1", "france 2", "france 3", "france 5", "m6", "bfmtv", "bfm", "cnews", "lci",
     "franceinfo", "euronews", "arte", "canal+", "c8", "w9", "tmc", "bbc", "cnn", "al jazeera",
     "sky news", "dw", "trt", "rai", "rtve", "zdf", "ard",
 ]
+COUNTRY_MAIN_LANG = {
+    "FR": "fr", "BE": "fr", "CH": "fr", "LU": "fr", "MC": "fr", "CA": "fr", "CD": "fr", "CG": "fr",
+    "SN": "fr", "CI": "fr", "CM": "fr", "ML": "fr", "BF": "fr", "NE": "fr", "TG": "fr", "BJ": "fr",
+    "GA": "fr", "GN": "fr", "MG": "fr", "RW": "fr", "BI": "fr", "HT": "fr", "DZ": "fr", "MA": "fr", "TN": "fr",
+    "GB": "en", "US": "en", "AU": "en", "IE": "en", "NZ": "en",
+    "ES": "es", "MX": "es", "AR": "es", "DE": "de", "IT": "it", "PT": "pt", "BR": "pt",
+}
+# mot de langue dans un titre -> code langue (« France 24 English » ≠ « France 24 Français »)
+_LANG_WORDS = {
+    "english": "en", "anglais": "en", "français": "fr", "francais": "fr", "french": "fr",
+    "español": "es", "espanol": "es", "spanish": "es", "arabic": "ar", "arabe": "ar", "عربي": "ar",
+    "deutsch": "de", "german": "de", "portugues": "pt", "português": "pt",
+}
+
+def _item_title(x) -> str:
+    return (getattr(x, "title", None) or getattr(x, "name", None) or "")
 
 def _popularity_rank(title: str) -> int:
     t = (title or "").lower()
@@ -3051,67 +3066,74 @@ def _popularity_rank(title: str) -> int:
             return i
     return len(POPULAR_CHANNEL_KEYWORDS)
 
-# Langue principale par pays (pour que « France 24 Français » passe avant « France 24 English » en France)
-COUNTRY_MAIN_LANG = {
-    "FR": "fr", "BE": "fr", "CH": "fr", "LU": "fr", "MC": "fr", "CA": "fr", "CD": "fr", "CG": "fr",
-    "SN": "fr", "CI": "fr", "CM": "fr", "ML": "fr", "BF": "fr", "NE": "fr", "TG": "fr", "BJ": "fr",
-    "GA": "fr", "GN": "fr", "MG": "fr", "RW": "fr", "BI": "fr", "HT": "fr", "DZ": "fr", "MA": "fr", "TN": "fr",
-    "GB": "en", "US": "en", "AU": "en", "IE": "en", "NZ": "en",
-    "ES": "es", "MX": "es", "AR": "es", "DE": "de", "IT": "it", "PT": "pt", "BR": "pt",
-}
-
-def sort_by_popularity(streams, lang: str = None):
-    """Tri : chaînes populaires (France 24 d'abord) -> langue du pays -> TV avant radio -> vues -> titre."""
-    return sorted(
-        streams,
-        key=lambda s: (
-            _popularity_rank(getattr(s, "title", "")),
-            0 if (lang and (getattr(s, "language", "") or "").lower()[:2] == lang) else 1,
-            1 if getattr(s, "stream_type", "") == "audio" else 0,
-            -(getattr(s, "viewers", 0) or 0),
-            (getattr(s, "title", "") or "").lower(),
-        ),
-    )
-
-def _country_external_streams(db, country: str, category: str = None):
-    """Chaînes de l'accueil (ExternalStream) d'un pays, triées par popularité."""
-    if not country:
-        return []
-    q = db.query(ExternalStream).filter(
-        ExternalStream.is_active == True,
-        func.upper(ExternalStream.country) == country.upper(),
-    )
-    if category and not category.startswith("iptv"):
-        q = q.filter(ExternalStream.category == category)
-    return sort_by_popularity(q.all(), COUNTRY_MAIN_LANG.get(country.upper()))
+def sort_by_popularity(items, country: str = None):
+    """Accepte ExternalStream (title) et IPTVChannel (name).
+    Tri : populaires (France 24 d'abord) -> langue du pays -> TV avant radio -> vues -> titre."""
+    lang = COUNTRY_MAIN_LANG.get((country or "").upper())
+    def key(x):
+        title = _item_title(x)
+        tl = title.lower()
+        xl = (getattr(x, "language", "") or "").lower()[:2]
+        word_lang = next((c for w, c in _LANG_WORDS.items() if w in tl), None)
+        item_lang = word_lang or xl
+        return (
+            _popularity_rank(title),
+            0 if (lang and item_lang == lang) else 1,
+            1 if getattr(x, "stream_type", "") == "audio" else 0,
+            -(getattr(x, "viewers", 0) or 0),
+            tl,
+        )
+    return sorted(items, key=key)
 
 def _norm_channel_name(name: str) -> str:
     n = re.sub(r"[\(\[].*?[\)\]]", " ", (name or "").lower())
     n = re.sub(r"[^a-z0-9àâäçéèêëîïôöùûüÿœ+ ]", " ", n)
     return re.sub(r"\s+", " ", n).strip()
 
-def _find_equivalent_external(db, channel):
-    """Retrouve, parmi les chaînes de l'accueil, celle qui correspond à une chaîne iptv-org
-    (ex. « France 24 (1080p) » -> « France 24 Français »), pour la lire avec le lecteur qui marche."""
-    if not channel.country:
+def _wanted_lang(title: str, language: str = None):
+    tl = (title or "").lower()
+    for w, c in _LANG_WORDS.items():
+        if w in tl:
+            return c
+    return (language or "").lower()[:2] or None
+
+def _find_working_iptv_equivalent(db, ext):
+    """Pour une chaîne de l'accueil (ExternalStream), retrouve la même chaîne dans iptv-org
+    (même pays, même nom, même langue). Ces flux-là sont ceux qui se lisent correctement."""
+    if not ext or not ext.country:
         return None
-    cands = _country_external_streams(db, channel.country)
-    base = _norm_channel_name(channel.name)
+    base = _norm_channel_name(ext.title)
     if not base:
         return None
-    exact = [c for c in cands if _norm_channel_name(c.title) == base]
-    if exact:
-        return exact[0]
-    close = [c for c in cands
-             if _norm_channel_name(c.title).startswith(base + " ") or base.startswith(_norm_channel_name(c.title) + " ")]
-    if not close:
+    cands = db.query(IPTVChannel).filter(
+        func.upper(IPTVChannel.country) == ext.country.upper(),
+        IPTVChannel.is_active == True,
+    ).all()
+    want = _wanted_lang(ext.title, ext.language)
+    scored = []
+    for c in cands:
+        if not c.url or not c.url.strip() or c.stream_type in ("audio",):
+            continue
+        cn = _norm_channel_name(c.name)
+        if not cn:
+            continue
+        if cn == base:
+            score = 3
+        elif base.startswith(cn + " ") or cn.startswith(base + " "):
+            score = 2
+        else:
+            continue
+        # la langue doit correspondre (ne pas servir France 24 English pour France 24 Français)
+        c_lang = _wanted_lang(c.name, c.language)
+        if want and c_lang and c_lang != want:
+            continue
+        if c.is_working is False:
+            score -= 1
+        scored.append((score, c.viewers or 0, c))
+    if not scored:
         return None
-    lang = (channel.language or "").lower()[:2]
-    if lang:
-        same_lang = [c for c in close if (c.language or "").lower()[:2] == lang]
-        if same_lang:
-            return same_lang[0]
-    return close[0]
+    scored.sort(key=lambda t: (-t[0], -t[1]))
+    return scored[0][2]
 
 @app.get("/", response_class=HTMLResponse)
 async def home(
@@ -3137,7 +3159,7 @@ async def home(
     ext_query = db.query(ExternalStream).filter(ExternalStream.is_active == True)
     if category and not category.startswith("iptv"):
         ext_query = ext_query.filter(ExternalStream.category == category)
-    external_streams = ext_query.order_by(desc(ExternalStream.viewers)).limit(60).all()
+    external_streams = sort_by_popularity(ext_query.order_by(desc(ExternalStream.viewers)).all())[:60]
 
     # Playlists IPTV - Convertir en dictionnaires pour le template
     playlists_all = db.query(IPTVPlaylist).filter(IPTVPlaylist.is_active == True)
@@ -3221,7 +3243,10 @@ async def home(
                     filters = [IPTVChannel.category.ilike(f"%{kw}%") for kw in keywords]
                     if filters:
                         channel_query = channel_query.filter(or_(*filters))
-            iptv_channels = channel_query.order_by(IPTVChannel.name).limit(200).all()
+            iptv_channels = sort_by_popularity(
+                channel_query.order_by(IPTVChannel.name).all(),
+                selected_playlist.country
+            )[:200]
         else:
             selected_playlist_dict = None
     else:
@@ -3282,25 +3307,6 @@ async def home(
             "playlist_id": ch.playlist_id,
         })
     
-    # Page pays : on affiche les MÊMES chaînes que l'accueil (ExternalStream, lecteur éprouvé),
-    # classées par popularité (France 24 en premier). Les flux iptv-org ne servent qu'en secours
-    # (pays sans chaîne dans le catalogue, régions, villes).
-    country_streams_dict = []
-    if (selected_playlist and selected_playlist.playlist_type == "country"
-            and selected_playlist.country and not (category and category.startswith("iptv"))):
-        for s in _country_external_streams(db, selected_playlist.country, category):
-            country_streams_dict.append({
-                "id": s.id,
-                "title": s.title,
-                "category": s.category,
-                "country": s.country or "",
-                "logo": s.logo or "",
-                "stream_type": s.stream_type,
-                "quality": s.quality or "",
-            })
-        if country_streams_dict:
-            iptv_channels_dict = []
-
     # Statistiques par catégorie
     categories_stats = []
     for cat in CATEGORIES:
@@ -3385,7 +3391,6 @@ async def home(
             "pl_cities": pl_cities,
             "pl_categories": pl_categories,
             "iptv_channels": iptv_channels_dict,
-            "country_streams": country_streams_dict,
             "selected_playlist": selected_playlist_dict,
             "categories": categories_stats,
             "language": lang,
@@ -3418,6 +3423,18 @@ async def watch_external(request: Request, stream_id: str, db: Session = Depends
     if not stream:
         return RedirectResponse(url="/", status_code=303)
 
+    # Les flux « maison » (ex. static.france24.com/...live_web.m3u8) renvoient des playlists
+    # périmées que le navigateur télécharge au lieu de les lire. Si la même chaîne existe dans
+    # le catalogue iptv-org (celui des pages pays, qui se lit bien), on joue celle-là.
+    if stream.stream_type in ("hls", "dash", None, ""):
+        try:
+            working = _find_working_iptv_equivalent(db, stream)
+        except Exception as _e:
+            logger.warning(f"équivalent iptv introuvable pour {stream.title}: {_e}")
+            working = None
+        if working:
+            return RedirectResponse(url=f"/watch/iptv/{working.id}", status_code=307)
+
     # Incrémenter le compteur de viewers
     stream.viewers += 1
     db.commit()
@@ -3428,15 +3445,11 @@ async def watch_external(request: Request, stream_id: str, db: Session = Depends
         youtube_data = await yt_service.get_stream_url(stream.url)
 
     # Recommandations
-    recommendations = [s for s in _country_external_streams(db, stream.country) if s.id != stream.id][:12]
-    if len(recommendations) < 12:
-        seen = {s.id for s in recommendations} | {stream.id}
-        more = db.query(ExternalStream).filter(
-            ExternalStream.category == stream.category,
-            ExternalStream.id.notin_(seen),
-            ExternalStream.is_active == True
-        ).order_by(desc(ExternalStream.viewers)).limit(12 - len(recommendations)).all()
-        recommendations += more
+    recommendations = db.query(ExternalStream).filter(
+        ExternalStream.category == stream.category,
+        ExternalStream.id != stream.id,
+        ExternalStream.is_active == True
+    ).order_by(desc(ExternalStream.viewers)).limit(8).all()
 
     return templates.TemplateResponse(
         request,
@@ -3461,12 +3474,6 @@ async def watch_iptv(request: Request, channel_id: str, db: Session = Depends(ge
     channel = db.query(IPTVChannel).filter(IPTVChannel.id == channel_id).first()
     if not channel:
         return RedirectResponse(url="/", status_code=303)
-
-    # Si la chaîne existe déjà dans le catalogue de l'accueil (ex. France 24), on utilise
-    # ce flux-là : même lecteur, flux éprouvé, plus de téléchargement de .m3u8.
-    equivalent = _find_equivalent_external(db, channel)
-    if equivalent:
-        return RedirectResponse(url=f"/watch/external/{equivalent.id}", status_code=307)
 
     # Vérification de l'URL
     if not channel.url or not channel.url.strip():
@@ -3497,11 +3504,14 @@ async def watch_iptv(request: Request, channel_id: str, db: Session = Depends(ge
         youtube_data = await yt_service.get_stream_url(channel.url)
 
     # Recommandations
-    recommendations = db.query(IPTVChannel).filter(
-        IPTVChannel.playlist_id == channel.playlist_id,
-        IPTVChannel.id != channel.id,
-        IPTVChannel.is_active == True
-    ).order_by(desc(IPTVChannel.viewers)).limit(12).all()
+    recommendations = sort_by_popularity(
+        db.query(IPTVChannel).filter(
+            IPTVChannel.playlist_id == channel.playlist_id,
+            IPTVChannel.id != channel.id,
+            IPTVChannel.is_active == True
+        ).all(),
+        channel.country
+    )[:12]
 
     return templates.TemplateResponse(
         request,
@@ -3511,7 +3521,6 @@ async def watch_iptv(request: Request, channel_id: str, db: Session = Depends(ge
             "channel": channel,
             "recommendations": recommendations,
             "other_channels": recommendations,
-            "country_streams": _country_external_streams(db, channel.country)[:12],
             "language": get_language(request),
             "visitor_id": get_visitor_id(request),
             "app_name": settings.APP_NAME,
@@ -9679,8 +9688,7 @@ document.addEventListener('DOMContentLoaded', function() {
     {# ═══════════ PAGE PAYS / PLAYLIST ═══════════ #}
     <div class="mb-6">
         <h1 class="font-display text-2xl font-semibold sm:text-3xl">{{ selected_playlist.display_name }}</h1>
-        {%- set _n = (country_streams|length) if country_streams else (iptv_channels|length if iptv_channels else 0) -%}
-        <p class="mt-1 text-sm text-ink-muted">{{ _n }} chaîne{{ 's' if _n > 1 else '' }} en direct</p>
+        <p class="mt-1 text-sm text-ink-muted">{{ iptv_channels|length if iptv_channels else 0 }} chaîne{{ 's' if (iptv_channels|length if iptv_channels else 0) > 1 else '' }} en direct</p>
     </div>
     <div class="mb-7">{{ country_rail() }}</div>
     {%- set _pn = selected_playlist.display_name|string -%}
@@ -9688,13 +9696,7 @@ document.addEventListener('DOMContentLoaded', function() {
         <h2 class="font-display text-lg font-semibold">Chaînes — {{ (_pn.split(' ', 1)|last) if ' ' in _pn else _pn }}</h2>
         <a href="/" class="text-xs font-medium text-accent-2 hover:underline">← Accueil</a>
     </div>
-    {% if country_streams %}
-    <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
-        {% for stream in country_streams %}
-        {{ stream_card('/watch/external/' ~ stream.id, stream.title, stream.logo, (stream.category if stream.category in cat_meta else 'iptv'), ((cat_meta.get(stream.category, cat_meta['iptv'])[3]) ~ ((' · ' ~ stream.country) if stream.country else '')), stream.quality, none, (stream.id, 'external'), stream.stream_type) }}
-        {% endfor %}
-    </div>
-    {% elif iptv_channels %}
+    {% if iptv_channels %}
     <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
         {% for ch in iptv_channels %}
         {{ stream_card('/watch/iptv/' ~ ch.id, ch.name, ch.logo, (ch.category if ch.category in cat_meta else 'iptv'), (cat_meta.get(ch.category, cat_meta['iptv'])[3] ~ ((' · ' ~ ch.country) if ch.country else '')), none, none, (ch.id, 'iptv')) }}
@@ -12146,7 +12148,7 @@ document.addEventListener('DOMContentLoaded',function(){
         <!-- Lecteur HLS/MP4 -->
         {% if stream.stream_type in ['hls','mp4','dash'] %}
         <video id="we-video" controls autoplay playsinline class="absolute inset-0 h-full w-full bg-black"
-            {% if stream.url %}src="{{ stream.url }}"{% endif %}>
+            {% if stream.url and stream.stream_type == 'mp4' %}src="{{ stream.url }}"{% endif %}>
             <p>Votre navigateur ne supporte pas la lecture vidéo.</p>
         </video>
         {% endif %}
@@ -12274,9 +12276,9 @@ document.addEventListener('DOMContentLoaded',function(){
 <!-- ── COLONNE DROITE : SIDEBAR ── -->
 <div>
     {% if similar_streams %}
-    <div class="mb-4 flex items-center justify-between"><h2 class="font-display text-lg font-semibold">Autres chaînes{% if stream.country %} — {{ stream.country }}{% endif %}</h2></div>
-    <div class="custom-scroll grid gap-3 pr-1 sm:grid-cols-2 xl:max-h-[640px] xl:grid-cols-1 xl:overflow-y-auto">
-        {% for s in similar_streams[:12] %}
+    <div class="mb-4 flex items-center justify-between"><h2 class="font-display text-lg font-semibold">Chaînes similaires</h2></div>
+    <div class="grid gap-3">
+        {% for s in similar_streams[:8] %}
         {{ stream_card('/watch/external/' ~ s.id, s.title, s.logo, (s.category if s.category in cat_meta else 'iptv'), (cat_meta.get(s.category, cat_meta['iptv'])[3] ~ ((' · ' ~ s.country) if s.country else ''))) }}
         {% endfor %}
     </div>
@@ -12450,6 +12452,8 @@ document.addEventListener('DOMContentLoaded',function(){
         var v = document.getElementById('we-video');
         if (!v || !streamUrl) { _initIframe(); return; }
         _log('Niveau 4 : src natif direct');
+        // .m3u8 dans <video src> = téléchargement sur Firefox/Chrome : on affiche l'erreur à la place.
+        if (/\.m3u8?(\?|$)/i.test(streamUrl) || effectiveType === 'hls') { _showFinalErr(); return; }
         if (_hls) { _hls.destroy(); _hls = null; }
         v.src = streamUrl; v.load();
         v.play().catch(function(){});
@@ -12465,6 +12469,10 @@ document.addEventListener('DOMContentLoaded',function(){
         _log('Niveau 5 : iframe');
         var container = document.getElementById('we-video');
         if (!container || !streamUrl) { _showFinalErr(); return; }
+        // Une URL .m3u8/.mpd/audio ouverte dans une iframe est TÉLÉCHARGÉE par le navigateur : on n'y va jamais.
+        if (/\.(m3u8?|mpd|mp3|aac|flac|mp4|webm)(\?|$)/i.test(streamUrl) || effectiveType === 'hls' || effectiveType === 'dash') {
+            _showFinalErr(); return;
+        }
         var wrap = container.parentNode;
         container.style.display = 'none';
         var iframe = document.createElement('iframe');
@@ -12943,14 +12951,8 @@ document.addEventListener('DOMContentLoaded',function(){
 <!-- SIDEBAR -->
 <div>
     <div class="mb-4 flex items-center justify-between"><h2 class="font-display text-lg font-semibold">Autres chaînes — {{ channel.country }}</h2></div>
-    {% if country_streams %}
-    <div class="custom-scroll grid gap-3 pr-1 sm:grid-cols-2 xl:max-h-[640px] xl:grid-cols-1 xl:overflow-y-auto">
-        {% for s in country_streams %}
-        {{ stream_card('/watch/external/' ~ s.id, s.title, s.logo, (s.category if s.category in cat_meta else 'iptv'), (cat_meta.get(s.category, cat_meta['iptv'])[3] ~ ((' · ' ~ s.country) if s.country else ''))) }}
-        {% endfor %}
-    </div>
-    {% elif other_channels %}
-    <div class="custom-scroll grid gap-3 pr-1 sm:grid-cols-2 xl:max-h-[640px] xl:grid-cols-1 xl:overflow-y-auto">
+    {% if other_channels %}
+    <div class="custom-scroll grid max-h-[640px] gap-3 overflow-y-auto pr-1">
         {% for ch in other_channels[:12] %}
         {{ stream_card('/watch/iptv/' ~ ch.id, ch.name, ch.logo, (ch.category if ch.category in cat_meta else 'iptv'), (cat_meta.get(ch.category, cat_meta['iptv'])[3] if ch.category else 'TV')) }}
         {% endfor %}
@@ -13072,7 +13074,6 @@ document.addEventListener('DOMContentLoaded',function(){
     function _initMP4Direct(){
         var v = document.getElementById('wi-video');
         if (!v || !_url) { _showFinalErr(); return; }
-        // Un .m3u8 passé à <video src> est téléchargé par les navigateurs sans HLS natif : on affiche l'erreur à la place.
         if (_type === 'hls' || /\.m3u8?(\?|$)/i.test(_url)) { _showFinalErr(); return; }
         if (_hls) { _hls.destroy(); _hls = null; }
         v.src = _url; v.load(); v.play().catch(function(){});
